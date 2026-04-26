@@ -1,0 +1,25 @@
+{
+  "name": "@repo/shared",
+  "version": "1.0.0",
+  "description": "Shared types, validation schemas, and constants for RDP Web Panel",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "dependencies": {
+    "@types/ssh2": "^1.15.5",
+    "axios": "^1.6.0",
+    "ssh2": "^1.17.0",
+    "zod": "^3.22.4"
+  },
+  "devDependencies": {
+    "@types/node": "^20.19.39",
+    "typescript": "^5.9.3"
+  }
+}

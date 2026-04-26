@@ -1,0 +1,85 @@
+# RDP Ubuntu Webhook Service - systemd Service File
+# 
+# Installation Instructions:
+# 1. Copy this file to /etc/systemd/system/rdp-ubuntu-service.service
+#    sudo cp rdp-ubuntu-service.service /etc/systemd/system/
+#
+# 2. Update the WorkingDirectory path to match your actual installation path
+#    sudo nano /etc/systemd/system/rdp-ubuntu-service.service
+#
+# 3. Reload systemd daemon to recognize the new service
+#    sudo systemctl daemon-reload
+#
+# 4. Enable the service to start on boot
+#    sudo systemctl enable rdp-ubuntu-service
+#
+# 5. Start the service
+#    sudo systemctl start rdp-ubuntu-service
+#
+# 6. Check service status
+#    sudo systemctl status rdp-ubuntu-service
+#
+# Useful Commands:
+# - View logs: sudo journalctl -u rdp-ubuntu-service -f
+# - Restart service: sudo systemctl restart rdp-ubuntu-service
+# - Stop service: sudo systemctl stop rdp-ubuntu-service
+# - Disable on boot: sudo systemctl disable rdp-ubuntu-service
+
+[Unit]
+# Service description
+Description=RDP Ubuntu Webhook Service
+# Start after network is available
+After=network.target
+
+[Service]
+# Service type: simple means the process will not fork
+Type=simple
+
+# User to run the service as (change if needed)
+User=ubuntu
+
+# Group to run the service as (change if needed)
+Group=ubuntu
+
+# Working directory where the service will run
+# IMPORTANT: Update this path to your actual installation directory
+WorkingDirectory=/opt/rdp-ubuntu-service
+
+# Command to start the service
+# Ensure npm is in PATH or use full path: /usr/bin/npm
+ExecStart=/usr/bin/npm start
+
+# Restart policy: on-failure means restart only if process exits with non-zero status
+Restart=on-failure
+
+# Number of restart attempts before giving up
+StartLimitBurst=5
+
+# Time window for restart attempts (in seconds)
+StartLimitIntervalSec=60
+
+# Delay between restart attempts (in seconds)
+RestartSec=10s
+
+# Standard output and error logging to systemd journal
+StandardOutput=journal
+StandardError=journal
+
+# Log level for journal
+SyslogIdentifier=rdp-ubuntu-service
+
+# Environment variables
+Environment="NODE_ENV=production"
+Environment="PORT=3001"
+
+# Optional: Set resource limits
+# CPUQuota=50%
+# MemoryLimit=512M
+
+# Optional: Set security options
+# NoNewPrivileges=true
+# PrivateTmp=true
+
+[Install]
+# Target to enable this service for (multi-user.target = normal system boot)
+WantedBy=multi-user.target

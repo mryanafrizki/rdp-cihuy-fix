@@ -1,0 +1,19 @@
+name = "aiserve-gateway"
+main = "src/index.ts"
+compatibility_date = "2024-12-16"
+
+[observability]
+enabled = true
+
+[vars]
+ENVIRONMENT = "production"
+
+# Secrets (set via `wrangler secret put`):
+# SAWERIA_PG_URL           (e.g. https://saweria-pg.xxx.workers.dev)
+# SAWERIA_API_KEY          (e.g. spg_xxxxxxxxxxxx)
+# SAWERIA_WEBHOOK_SECRET   (from saweria-pg merchant webhook config)
+# GATEWAY_SECRET           5ff62de724cba90765d9869673dbc4bd8f9d9c9b49ebe027fd36dea03b61207c
+# COBAIN_WEB_URL           (e.g. https://rdp.cobain.dev)
+
+# Domain setup: use Custom Domains in Cloudflare dashboard
+# Workers > cobain-gateway > Settings > Domains & Routes > Add > Custom Domain > gate1.eov.my.id

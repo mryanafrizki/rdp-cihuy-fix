@@ -1,0 +1,32 @@
+{
+  "name": "digitalocean-telebot",
+  "version": "2.0.0",
+  "description": "DigitalOcean management Telegram bot built with Telegraf and Node.js",
+  "main": "src/bot.js",
+  "scripts": {
+    "start": "node src/bot.js",
+    "dev": "nodemon src/bot.js"
+  },
+  "keywords": [
+    "telegram",
+    "bot",
+    "digitalocean",
+    "cloud",
+    "management"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "dotenv": "^16.3.1",
+    "fs-extra": "^11.2.0",
+    "http-proxy-agent": "^7.0.2",
+    "https-proxy-agent": "^7.0.6",
+    "mongoose": "^8.19.2",
+    "socks-proxy-agent": "^8.0.5",
+    "telegraf": "^4.15.0",
+    "uuid": "^9.0.1"
+  },
+  "devDependencies": {
+    "nodemon": "^3.0.2"
+  }
+}

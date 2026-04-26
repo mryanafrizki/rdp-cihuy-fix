@@ -1,0 +1,2394 @@
+// Cloudflare Workers version of backend server
+// Compatible with Cloudflare Workers runtime
+// 
+// SECURE IMAGE DISTRIBUTION SYSTEM
+// - Unique encryption per installation (AES-256-GCM)
+// - One-time use only
+// - IP-restricted access
+// - Secret key authentication
+// - R2 storage for encrypted images
+// - Automatic cleanup after use
+
+// Base Image URL mapping (disimpan di Workers script, tidak visible ke user)
+const BASE_IMAGE_URL_MAP = {
+    'win_11revi_h25': 'https://juhuw.info/direct/1ZJxc1ox0LjSIyXUfBABin72qryR1EC5_',
+    'win_11atlas_h25': 'https://juhuw.info/direct/1EzM-wQY783N9KeiEcHiX2ixLOQ-kQ6Jv',
+    'win_11atlas_h22': 'https://juhuw.info/direct/1Xwx0XjWtTnPcuyj8apGgARc5Du_H4I_1',
+    'win_11ghost': 'https://juhuw.info/direct/1pYU88jTClv9UZoa4OZEwZAPO9mlPhLFv',
+    'win_10atlas': 'https://juhuw.info/direct/1ooXmN3lzZgRTNrpGMRDpmAwYPTpuPEOR',
+    'win_10ghost': 'https://juhuw.info/direct/1SI76QMhLbgNT2FozZEvuPl20FhoooZGb',
+    'win_22': 'https://files.meocloud.my.id/7:/UEFI/windows2022.gz',
+    'win_19': 'https://files.meocloud.my.id/7:/UEFI/windows2019.gz',
+    'win_2008': 'https://files.meocloud.my.id/9:/windows2008.gz',
+    'win_2012R2': 'https://files.meocloud.my.id/4:/windows2012R2.gz',
+    'win_2016': 'https://files.meocloud.my.id/4:/windows2016.gz',
+    'win_2019': 'https://files.meocloud.my.id/7:/UEFI/windows2019.gz',
+    'win_7': 'https://files.meocloud.my.id/9:/windows7.gz',
+    'win_10_ent': 'https://files.meocloud.my.id/7:/UEFI/windows10.gz',
+    'win_11_pro': 'https://files.meocloud.my.id/7:/UEFI/windows11.gz',
+    'win_2022_lite': 'https://files.meocloud.my.id/6:/winsrv2022lite.gz',
+    'win_2016_lite': 'https://files.meocloud.my.id/6:/winsrv2016lite.gz',
+    'win_2012R2_lite': 'https://files.meocloud.my.id/6:/winsrv2012r2lite.gz',
+    'win_7_sp1_lite': 'https://files.meocloud.my.id/6:/win7lite.gz',
+    'win_2012R2_uefi': 'https://files.meocloud.my.id/7:/UEFI/Windows2012R2_UEFI.gz',
+    'win_2016_uefi': 'https://files.meocloud.my.id/7:/UEFI/Windows2016_UEFI.gz',
+    'win_2019_uefi': 'https://files.meocloud.my.id/7:/UEFI/Windows2019_UEFI.gz',
+    'win_2022_uefi': 'https://files.meocloud.my.id/7:/UEFI/Windows2022_UEFI.gz',
+    'win_10_uefi': 'https://files.meocloud.my.id/7:/UEFI/Windows10_UEFI.gz',
+    'win_11_uefi': 'https://files.meocloud.my.id/7:/UEFI/Windows11_UEFI.gz',
+    'win_2025': 'https://files.meocloud.my.id/10:/windows2025.gz'
+};
+
+// Script URLs (disimpan di Workers script)
+const SCRIPT_URLS = {
+    // ALL scripts MUST be encrypted (.sh.enc files) - NO plaintext fallback
+    reinstall: 'https://api.eov.my.id/azovest/reinstall.sh.enc',
+    trans: 'https://api.eov.my.id/azovest/trans.sh.enc',
+    tele: 'https://api.eov.my.id/azovest/tele.sh.enc',
+    confhome: 'https://api.eov.my.id/azovest'
+};
+
+// Binary installer URL (rdp-installer-azovest.img)
+// Note: This will be set via environment variable in wrangler.toml or use default
+// In Workers, access via env.BINARY_INSTALLER_URL in the fetch handler
+const DEFAULT_BINARY_INSTALLER_URL = 'https://api.eov.my.id/azovest/rdp-installer-azovest.img';
+
+// ============================================================================
+// ENCRYPTION SERVICE - AES-256-GCM
+// ============================================================================
+
+class EncryptionService {
+    /**
+     * Encrypt data using AES-256-GCM
+     * @param {ArrayBuffer} data - Data to encrypt
+     * @param {CryptoKey} key - Encryption key
+     * @returns {Promise<{encrypted: ArrayBuffer, iv: Uint8Array, authTag: Uint8Array}>}
+     */
+    static async encrypt(data, key) {
+        const iv = crypto.getRandomValues(new Uint8Array(16)); // 128-bit IV
+        
+        const encrypted = await crypto.subtle.encrypt(
+            {
+                name: 'AES-GCM',
+                iv: iv,
+                tagLength: 128 // 128-bit auth tag
+            },
+            key,
+            data
+        );
+        
+        // AES-GCM produces encrypted data with auth tag appended
+        // Split into encrypted data and auth tag
+        const encryptedArray = new Uint8Array(encrypted);
+        const authTag = encryptedArray.slice(-16); // Last 16 bytes
+        const encryptedData = encryptedArray.slice(0, -16); // All except last 16 bytes
+        
+        return {
+            encrypted: encryptedData.buffer,
+            iv: iv,
+            authTag: authTag
+        };
+    }
+    
+    /**
+     * Decrypt data using AES-256-GCM
+     * @param {ArrayBuffer} encryptedData - Encrypted data
+     * @param {Uint8Array} iv - Initialization vector
+     * @param {Uint8Array} authTag - Authentication tag
+     * @param {CryptoKey} key - Decryption key
+     * @returns {Promise<ArrayBuffer>}
+     */
+    static async decrypt(encryptedData, iv, authTag, key) {
+        // Combine encrypted data and auth tag
+        const combined = new Uint8Array(encryptedData.byteLength + authTag.byteLength);
+        combined.set(new Uint8Array(encryptedData), 0);
+        combined.set(authTag, encryptedData.byteLength);
+        
+        const decrypted = await crypto.subtle.decrypt(
+            {
+                name: 'AES-GCM',
+                iv: iv,
+                tagLength: 128
+            },
+            key,
+            combined
+        );
+        
+        return decrypted;
+    }
+    
+    /**
+     * Generate random encryption key (256-bit)
+     * @returns {Promise<CryptoKey>}
+     */
+    static async generateKey() {
+        return crypto.subtle.generateKey(
+            {
+                name: 'AES-GCM',
+                length: 256
+            },
+            true, // extractable
+            ['encrypt', 'decrypt']
+        );
+    }
+    
+    /**
+     * Export key to base64 string
+     * @param {CryptoKey} key
+     * @returns {Promise<string>}
+     */
+    static async exportKey(key) {
+        const exported = await crypto.subtle.exportKey('raw', key);
+        return btoa(String.fromCharCode(...new Uint8Array(exported)));
+    }
+    
+    /**
+     * Import key from base64 string
+     * @param {string} keyBase64
+     * @returns {Promise<CryptoKey>}
+     */
+    static async importKey(keyBase64) {
+        const keyData = Uint8Array.from(atob(keyBase64), c => c.charCodeAt(0));
+        return crypto.subtle.importKey(
+            'raw',
+            keyData,
+            {
+                name: 'AES-GCM',
+                length: 256
+            },
+            true,
+            ['encrypt', 'decrypt']
+        );
+    }
+}
+
+// ============================================================================
+// INSTALLATION MANAGER
+// ============================================================================
+
+class InstallationManager {
+    /**
+     * Initialize new installation
+     * Creates encrypted image, stores in R2, returns installation metadata
+     */
+    static async initializeInstallation(kv, r2, env, {
+        vpsIp,
+        osVersion,
+        rdpPort = 3389,
+        metadata = {},
+        secret,
+        secureMode = false // New: enable secure IMG mode with per-user keys
+    }) {
+        // Generate unique installation ID
+        const installId = crypto.randomUUID();
+        
+        // Get base image URL (for reference, not for encryption)
+        const baseImageUrl = BASE_IMAGE_URL_MAP[osVersion];
+        if (!baseImageUrl) {
+            throw new Error(`Invalid OS version: ${osVersion}`);
+        }
+        
+        // SECURE MODE: Generate per-user keys for encrypted IMG
+        let userKey = null;
+        let encryptedMasterKey = null;
+        
+        if (secureMode) {
+            // Master key is stored in env.MASTER_KEY (set by admin)
+            const masterKey = env.MASTER_KEY;
+            if (!masterKey) {
+                throw new Error('MASTER_KEY not configured. Please set MASTER_KEY in environment variables.');
+            }
+            
+            // Generate unique user key (random, per installation)
+            userKey = crypto.randomBytes(32).toString('base64'); // 256-bit key
+            
+            // Encrypt master key with user key (AES-256-CBC with PBKDF2)
+            const salt = crypto.randomBytes(16);
+            const iv = crypto.randomBytes(16);
+            const key = crypto.pbkdf2Sync(userKey, salt, 100000, 32, 'sha256');
+            const cipher = crypto.createCipheriv('aes-256-cbc', key, iv);
+            const encrypted = Buffer.concat([
+                cipher.update(masterKey, 'utf8'),
+                cipher.final()
+            ]);
+            
+            // Format: salt (16) + iv (16) + encrypted data
+            encryptedMasterKey = Buffer.concat([salt, iv, encrypted]).toString('base64');
+            
+            console.log(`[INSTALL] Secure mode: Generated user key and encrypted master key`);
+            console.log(`[INSTALL] User key: ${userKey.substring(0, 16)}...`);
+        }
+        
+        // Use rdp-installer-azovest.img from public URL 
+        // Binary file is available at: https://api.eov.my.id/azovest/rdp-installer-azovest.img
+        const binaryInstallerUrl = env.BINARY_INSTALLER_URL || 'https://api.eov.my.id/azovest/rdp-installer-azovest.img';
+        
+        // Generate token for binary installer URL (like other URLs)
+        const binaryInstallerToken = await generateToken(kv, 'encrypted-binary', {
+            url: binaryInstallerUrl,
+            installId,
+            vpsIp
+        });
+        
+        console.log(`[INSTALL] Using binary installer from: ${binaryInstallerUrl}`);
+        console.log(`[INSTALL] Generated token for binary installer: ${binaryInstallerToken.substring(0, 16)}...`);
+        
+        // Generate token for OS image (tele.sh needs this)
+        // MUST bind to VPS IP target (required for security)
+        const imageToken = await generateToken(kv, 'image', {
+            url: baseImageUrl,
+            osVersion,
+            vpsIp // Bind to VPS IP target
+        });
+        
+        console.log(`[INSTALL] Generated token for OS image: ${imageToken.substring(0, 16)}...`);
+        
+        // Store installation metadata in KV
+        const installationData = {
+            installId,
+            vpsIp,
+            osVersion,
+            rdpPort,
+            baseImageUrl, // OS image URL (for reference)
+            binaryInstallerUrl, // Original binary installer URL (for backend to download)
+            binaryInstallerToken, // Token for binary installer URL
+            imageToken, // Token for OS image (for tele.sh)
+            secureMode, // Flag for secure IMG mode
+            userKey, // User key (if secure mode)
+            encryptedMasterKey, // Encrypted master key (if secure mode)
+            status: 'ready',
+            used: false,
+            keyUsed: false, // Track if encryption key has been used for this installation (one-time use)
+            downloadCount: 0,
+            maxDownloads: 1, // One-time use only
+            createdAt: Date.now(),
+            expiresAt: Date.now() + (30 * 60 * 1000), // 30 minutes
+            metadata
+        };
+        
+        // Store in KV with TTL
+        await kv.put(`installation:${installId}`, JSON.stringify(installationData), {
+            expirationTtl: 1800 // 30 minutes
+        });
+        
+        console.log(`[INSTALL] Initialized installation ${installId} for ${vpsIp}, OS: ${osVersion}`);
+        
+        const response = {
+            installId,
+            downloadUrl: `/i-enc/${binaryInstallerToken}`, // VPS will download .img from this tokenized URL
+            imageToken, // Token for OS image (for tele.sh)
+            status: 'ready',
+            expiresAt: installationData.expiresAt,
+            message: 'Installation initialized. VPS should download .img from downloadUrl (tokenized).'
+        };
+        
+        // Add secure mode keys if enabled
+        if (secureMode && userKey && encryptedMasterKey) {
+            response.userKey = userKey;
+            response.encryptedMasterKey = encryptedMasterKey;
+            response.secureMode = true;
+        }
+        
+        return response;
+    }
+    
+    /**
+     * Get binary installer URL for bot server to download and encrypt
+     * Bot server will download rdp-installer-azovest.img, encrypt it, and upload to R2
+     */
+    static async getBinaryInstallerUrl(installationData) {
+        const { binaryInstallerUrl } = installationData;
+        return {
+            binaryInstallerUrl,
+            message: 'Bot server should download rdp-installer-azovest.img, encrypt it, and upload to R2'
+        };
+    }
+    
+    /**
+     * Check if encrypted image exists in R2
+     * Bot server uploads encrypted image after encryption
+     */
+    static async checkEncryptedImage(r2, installId) {
+        if (!r2) {
+            throw new Error('R2 bucket not configured. Please bind ENCRYPTED_IMAGES R2 bucket to worker.');
+        }
+        
+        const r2Key = `encrypted/${installId}.img.enc`;
+        try {
+            const existing = await r2.head(r2Key);
+            if (existing) {
+                console.log(`[INSTALL] Encrypted image exists in R2: ${r2Key}`);
+                return { exists: true, r2Key };
+            }
+        } catch (headError) {
+            // File doesn't exist
+        }
+        
+        return { exists: false, r2Key };
+    }
+    
+    /**
+     * Get installation data
+     */
+    static async getInstallation(kv, installId) {
+        const data = await kv.get(`installation:${installId}`);
+        if (!data) return null;
+        return JSON.parse(data);
+    }
+    
+    /**
+     * Update installation status
+     */
+    static async updateInstallation(kv, installId, updates) {
+        const installation = await this.getInstallation(kv, installId);
+        if (!installation) {
+            throw new Error('Installation not found');
+        }
+        
+        const updated = { ...installation, ...updates, updatedAt: Date.now() };
+        
+        const ttl = Math.floor((updated.expiresAt - Date.now()) / 1000);
+        if (ttl > 0) {
+            await kv.put(`installation:${installId}`, JSON.stringify(updated), {
+                expirationTtl: ttl
+            });
+        }
+        
+        return updated;
+    }
+    
+    /**
+     * Cleanup installation (delete from R2 and KV)
+     */
+    static async cleanup(kv, r2, installId) {
+        console.log(`[INSTALL] Cleaning up installation ${installId}...`);
+        
+        // Get installation data
+        const installation = await this.getInstallation(kv, installId);
+        
+        // Delete from R2
+        if (r2) {
+            const r2Key = `encrypted/${installId}.img.enc`;
+            try {
+                await r2.delete(r2Key);
+                console.log(`[INSTALL] Deleted encrypted image from R2: ${r2Key}`);
+            } catch (e) {
+                console.error(`[INSTALL] Failed to delete from R2: ${e.message}`);
+            }
+        }
+        
+        // Delete encryption key and mark as cleaned up
+        if (installation) {
+            const cleaned = {
+                ...installation,
+                encryptionKey: null,
+                status: 'cleaned',
+                cleanedAt: Date.now()
+            };
+            
+            // Store for 24 hours for audit purposes, then auto-delete
+            await kv.put(`installation:${installId}`, JSON.stringify(cleaned), {
+                expirationTtl: 86400 // 24 hours
+            });
+        }
+        
+        console.log(`[INSTALL] Cleanup completed for ${installId}`);
+        return { success: true, message: 'Installation cleaned up' };
+    }
+}
+
+// Token storage menggunakan Cloudflare KV
+// Token data: { type, url, expiresAt, used, createdAt }
+async function generateToken(kv, type, data) {
+    const token = generateRandomToken(); // 64 hex chars (256 bits)
+    const expiresAt = Date.now() + (30 * 60 * 1000); // 30 minutes
+    
+    const tokenData = {
+        type,
+        data,
+        expiresAt,
+        used: false,
+        useCount: 0, // Track jumlah penggunaan (untuk image token: max 2x)
+        maxUses: type === 'image' ? 3 : (type === 'encrypted-binary' ? 1 : (type === 'confhome' ? 30 : 1)), // Image token: 2x use, encrypted-binary: 1x (one-time use), confhome: 100x (many variants), lainnya: 1x
+        createdAt: Date.now()
+    };
+    
+    // Store in KV with TTL (expires in 30 minutes)
+    await kv.put(`token:${token}`, JSON.stringify(tokenData), {
+        expirationTtl: 1800 // 30 minutes in seconds
+    });
+    
+    return token;
+}
+
+async function validateToken(kv, token, type, clientIp = null) {
+    const tokenKey = `token:${token}`;
+    console.info(`[VALIDATE] Looking for key: ${tokenKey}, type: ${type}`);
+    const tokenDataStr = await kv.get(tokenKey);
+    console.info(`[VALIDATE] KV get result: ${tokenDataStr ? 'FOUND' : 'NOT FOUND'}`);
+    
+    if (!tokenDataStr) {
+        return { valid: false, error: 'Token tidak ditemukan' };
+    }
+    
+    const tokenData = JSON.parse(tokenDataStr);
+    
+    if (Date.now() > tokenData.expiresAt) {
+        await kv.delete(tokenKey);
+        return { valid: false, error: 'Token expired' };
+    }
+    
+    if (tokenData.type !== type) {
+        return { valid: false, error: 'Token type mismatch' };
+    }
+    
+    // IP binding validation: semua token yang punya vpsIp HARUS match dengan clientIp
+    if (tokenData.data && tokenData.data.vpsIp && clientIp) {
+        if (clientIp !== tokenData.data.vpsIp) {
+            console.error(`[VALIDATE] IP mismatch: clientIp=${clientIp}, expected vpsIp=${tokenData.data.vpsIp}`);
+            return { valid: false, error: `IP address ${clientIp} is not authorized. Only VPS target IP ${tokenData.data.vpsIp} can access.` };
+        }
+    }
+    
+    // Image token: boleh digunakan 2x (untuk HEAD request + GET request dari dd raw)
+    // Encrypted-binary token: one-time use (untuk security)
+    // Confhome token: 100x use (banyak variant file: debian.cfg, ubuntu.yaml, redhat.cfg, dll)
+    // Script token: one-time use (untuk security)
+    const maxUses = tokenData.maxUses || (type === 'image' ? 2 : (type === 'encrypted-binary' ? 1 : (type === 'confhome' ? 100 : 1)));
+    const useCount = tokenData.useCount || 0;
+    
+    if (useCount >= maxUses) {
+        return { valid: false, error: `Token sudah digunakan ${useCount} kali (max ${maxUses}x use)` };
+    }
+    
+    // Increment use count
+    tokenData.useCount = useCount + 1;
+    tokenData.used = tokenData.useCount >= maxUses; // Mark as used jika sudah mencapai max uses
+    
+    // Update token di KV
+    await kv.put(tokenKey, JSON.stringify(tokenData), {
+        expirationTtl: Math.floor((tokenData.expiresAt - Date.now()) / 1000)
+    });
+    
+    // Delete setelah expired atau jika sudah max uses
+    if (type === 'image') {
+        // Image token: delete setelah 5 menit atau setelah expired (allow time untuk download)
+        // Tapi jangan delete terlalu cepat jika masih dalam download process
+        if (tokenData.used) {
+            // Sudah 2x use, delete setelah 5 menit (cukup untuk download besar)
+            setTimeout(() => {
+                kv.delete(tokenKey).catch(() => {});
+            }, 5 * 60 * 1000); // 5 menit grace period untuk download besar
+        }
+    } else if (type === 'confhome') {
+        // Confhome token: delete setelah expired atau setelah 100x use (banyak variant file)
+        // Jangan delete terlalu cepat karena banyak file yang perlu diakses
+        if (tokenData.used) {
+            // Sudah 100x use, delete setelah 10 menit (cukup untuk akses banyak file)
+            setTimeout(() => {
+                kv.delete(tokenKey).catch(() => {});
+            }, 10 * 60 * 1000); // 10 menit grace period untuk akses banyak file
+        }
+    } else {
+        // Script/encrypted-binary token: delete setelah use (one-time use)
+        if (tokenData.used) {
+            kv.delete(tokenKey).catch(() => {});
+        }
+    }
+    
+    return { valid: true, data: tokenData.data };
+}
+
+function generateRandomToken() {
+    // Generate 32 random bytes (256 bits) and convert to hex (64 chars)
+    const array = new Uint8Array(32);
+    crypto.getRandomValues(array);
+    return Array.from(array, byte => byte.toString(16).padStart(2, '0')).join('');
+}
+
+async function getTokenStats(kv) {
+    // Note: KV doesn't support listing keys efficiently
+    // Return basic stats (active tokens count is approximate)
+    return {
+        activeTokens: 0, // Approximate - KV doesn't support count
+        unusedTokens: 0
+    };
+}
+
+// Main handler
+export default {
+    async fetch(request, env, ctx) {
+        const url = new URL(request.url);
+        
+        // IMPORTANT: Disable all browser prefetch/preconnect untuk prevent URL exposure
+        // Set global headers untuk semua response (kecuali jika di-override)
+        const path = url.pathname;
+        const method = request.method;
+        
+        // 🧪 TEST ENDPOINT: Test image download dari dev.js
+        if (path === '/test/fetch-image' && method === 'GET') {
+            // ✅ Use custom domain (juhuw.info) to avoid Worker-to-Worker blocking
+            const imageUrl = url.searchParams.get('url') || 'https://juhuw.info/';
+            
+            console.log(`[TEST] Testing fetch from: ${imageUrl}`);
+            
+            try {
+                const startTime = Date.now();
+                let testResponse;
+                let method = 'direct';
+                
+                // If dev.js URL, use JSON mode
+                if (imageUrl.includes('/direct/')) {
+                    method = 'json-mode';
+                    console.log(`[TEST] Using JSON mode for dev.js`);
+                    
+                    const jsonUrl = imageUrl + (imageUrl.includes('?') ? '&' : '?') + 'mode=json';
+                    const jsonResponse = await fetch(jsonUrl, {
+                        method: 'GET',
+                        headers: { 'Accept': 'application/json' }
+                    });
+                    
+                    if (jsonResponse.ok) {
+                        const jsonData = await jsonResponse.json();
+                        console.log(`[TEST] Got Google Drive URL, now fetching...`);
+                        
+                        testResponse = await fetch(jsonData.url, {
+                            method: 'GET',
+                            headers: {
+                                'Authorization': jsonData.headers.Authorization,
+                                'User-Agent': 'Mozilla/5.0 (compatible; RDP-Installer-Test/1.0)'
+                            }
+                        });
+                    } else {
+                        testResponse = jsonResponse;
+                    }
+                } else {
+                    testResponse = await fetch(imageUrl, {
+                        method: 'GET',
+                        redirect: 'follow',
+                        headers: {
+                            'User-Agent': 'Mozilla/5.0 (compatible; RDP-Installer-Test/1.0)',
+                            'Accept': 'application/gzip, application/octet-stream, */*'
+                        }
+                    });
+                }
+                
+                const fetchTime = Date.now() - startTime;
+                
+                console.log(`[TEST] Status: ${testResponse.status}, Time: ${fetchTime}ms`);
+                
+                const headers = {};
+                testResponse.headers.forEach((value, key) => {
+                    headers[key] = value;
+                });
+                
+                let bodyPreview = '';
+                let isError = false;
+                
+                if (testResponse.ok) {
+                    // Read first 200 bytes
+                    const reader = testResponse.body.getReader();
+                    const { value, done } = await reader.read();
+                    reader.releaseLock();
+                    
+                    if (value) {
+                        bodyPreview = new TextDecoder().decode(value.slice(0, 200));
+                        isError = bodyPreview.toLowerCase().includes('<html') || 
+                                  bodyPreview.toLowerCase().includes('<!doctype') ||
+                                  bodyPreview.trim().startsWith('{');
+                    }
+                } else {
+                    bodyPreview = await testResponse.text();
+                    isError = true;
+                }
+                
+                return new Response(JSON.stringify({
+                    success: !isError && testResponse.ok,
+                    status: testResponse.status,
+                    statusText: testResponse.statusText,
+                    fetchTimeMs: fetchTime,
+                    method: method,
+                    url: imageUrl,
+                    headers: headers,
+                    bodyPreview: bodyPreview.substring(0, 200),
+                    analysis: {
+                        isHtml: bodyPreview.toLowerCase().includes('<html'),
+                        isJson: bodyPreview.trim().startsWith('{'),
+                        isBinary: !bodyPreview.toLowerCase().includes('<html') && !bodyPreview.trim().startsWith('{'),
+                        message: isError ? '❌ Response is error' : '✅ Response OK'
+                    }
+                }, null, 2), {
+                    status: 200,
+                    headers: { 
+                        'Content-Type': 'application/json',
+                        'Access-Control-Allow-Origin': '*'
+                    }
+                });
+                
+            } catch (error) {
+                return new Response(JSON.stringify({
+                    success: false,
+                    error: error.message,
+                    stack: error.stack,
+                    url: imageUrl
+                }, null, 2), {
+                    status: 200,
+                    headers: { 
+                        'Content-Type': 'application/json',
+                        'Access-Control-Allow-Origin': '*'
+                    }
+                });
+            }
+        }
+        
+        // Get KV namespace and R2 bucket (must be bound in wrangler.toml)
+        const kv = env.TOKEN_STORAGE;
+        const r2 = env.ENCRYPTED_IMAGES; // R2 bucket for encrypted images
+        
+        // CORS headers + Security headers untuk prevent URL exposure
+        const corsHeaders = {
+            'Access-Control-Allow-Origin': '*',
+            'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+            'Access-Control-Allow-Headers': 'Content-Type, X-Api-Secret',
+            // Security headers untuk prevent browser prefetch/preconnect ke URL asli
+            'X-DNS-Prefetch-Control': 'off', // Disable DNS prefetch
+            'X-Content-Type-Options': 'nosniff', // Prevent MIME type sniffing
+        };
+        
+        // Handle OPTIONS (CORS preflight)
+        if (method === 'OPTIONS') {
+            return new Response(null, {
+                headers: corsHeaders
+            });
+        }
+        
+        try {
+            // Health check and version info
+            if (path === '/health' && method === 'GET') {
+                const stats = await getTokenStats(kv);
+                return new Response(JSON.stringify({ 
+                    status: 'ok', 
+                    version: '2.0.0-fixed', // Version to identify this is the correct worker
+                    timestamp: Date.now(),
+                    kvBound: !!kv,
+                    r2Bound: !!r2,
+                    endpoints: {
+                        initInstallation: 'POST /api/installation/init',
+                        downloadBinary: 'GET /i-enc/:token',
+                        downloadImage: 'GET /api/installation/download/:installId',
+                        getScript: 'GET /api/scripts/:scriptName/:token',
+                        uploadEncrypted: 'POST /api/installation/upload',
+                        getKey: 'GET /api/installation/key/:installId',
+                        confHome: 'GET /c/:token/*'
+                    },
+                    ...stats
+                }), {
+                    status: 200,
+                    headers: {
+                        'Content-Type': 'application/json',
+                        ...corsHeaders
+                    }
+                });
+            }
+            
+            // Original health check
+            if (path === '/health-simple' && method === 'GET') {
+                const stats = await getTokenStats(kv);
+                return new Response(JSON.stringify({
+                    status: 'ok',
+                    stats,
+                    platform: 'cloudflare-workers',
+                    features: {
+                        encryption: true,
+                        r2Storage: !!r2,
+                        kvStorage: !!kv
+                    }
+                }), {
+                    headers: {
+                        'Content-Type': 'application/json',
+                        ...corsHeaders
+                    }
+                });
+            }
+            
+            // ================================================================
+            // SECURE INSTALLATION ENDPOINTS
+            // ================================================================
+            
+            // Initialize installation: POST /api/installation/init
+            // Creates encrypted image, stores in R2, returns installId
+            if (path === '/api/installation/init' && method === 'POST') {
+                try {
+                    const body = await request.json();
+                    const { secret, vpsIp, osVersion, rdpPort, metadata, secureMode } = body;
+                    
+                    // Validate secret key
+                    const expectedSecret = env.API_SECRET_KEY;
+                    if (!expectedSecret || secret !== expectedSecret) {
+                        console.error('[INSTALL] Invalid secret key');
+                        return new Response(JSON.stringify({ 
+                            error: 'Unauthorized',
+                            message: 'Invalid secret key'
+                        }), {
+                            status: 401,
+                            headers: {
+                                'Content-Type': 'application/json',
+                                ...corsHeaders
+                            }
+                        });
+                    }
+                    
+                    // Validate required fields
+                    if (!vpsIp || !osVersion) {
+                        return new Response(JSON.stringify({ 
+                            error: 'Bad Request',
+                            message: 'vpsIp and osVersion are required'
+                        }), {
+                            status: 400,
+                            headers: {
+                                'Content-Type': 'application/json',
+                                ...corsHeaders
+                            }
+                        });
+                    }
+                    
+                    // Check KV availability (R2 not required if using public URL)
+                    if (!kv) {
+                        return new Response(JSON.stringify({ 
+                            error: 'Configuration Error',
+                            message: 'KV namespace not bound'
+                        }), {
+                            status: 500,
+                            headers: {
+                                'Content-Type': 'application/json',
+                                ...corsHeaders
+                            }
+                        });
+                    }
+                    
+                    // Initialize installation
+                    const result = await InstallationManager.initializeInstallation(kv, r2, env, {
+                        vpsIp,
+                        osVersion,
+                        rdpPort,
+                        metadata,
+                        secret,
+                        secureMode: secureMode === true // Enable secure IMG mode if requested
+                    });
+                    
+                    return new Response(JSON.stringify({
+                        success: true,
+                        ...result
+                    }), {
+                        headers: {
+                            'Content-Type': 'application/json',
+                            ...corsHeaders
+                        }
+                    });
+                    
+                } catch (error) {
+                    console.error('[INSTALL] Error initializing installation:', error);
+                    return new Response(JSON.stringify({ 
+                        error: 'Internal Server Error',
+                        message: error.message
+                    }), {
+                        status: 500,
+                        headers: {
+                            'Content-Type': 'application/json',
+                            ...corsHeaders
+                        }
+                    });
+                }
+            }
+            
+            // Download binary installer with token: GET /i-enc/:token
+            // Backend downloads from and streams to VPS (no encryption, just tokenized URL)
+            if (path.startsWith('/i-enc/') && method === 'GET') {
+                try {
+                    const token = path.split('/i-enc/')[1];
+                    
+                    if (!token) {
+                        return new Response(JSON.stringify({ error: 'Token required' }), {
+                            status: 400,
+                            headers: { 'Content-Type': 'application/json', ...corsHeaders }
+                        });
+                    }
+                    
+                    // Get client IP for IP binding validation
+                    const clientIp = request.headers.get('CF-Connecting-IP') || 
+                                    request.headers.get('X-Forwarded-For')?.split(',')[0]?.trim() || 
+                                    'unknown';
+                    
+                    // Validate token
+                    const validation = await validateToken(kv, token, 'encrypted-binary', clientIp);
+                    
+                    if (!validation.valid) {
+                        console.error(`[ENCRYPTED BINARY] Token validation failed: ${validation.error}`);
+                        return new Response(JSON.stringify({ 
+                            error: 'Invalid token',
+                            message: validation.error
+                        }), {
+                            status: 403,
+                            headers: { 'Content-Type': 'application/json', ...corsHeaders }
+                        });
+                    }
+                    
+                    const tokenData = validation.data;
+                    const binaryInstallerUrl = tokenData.url;
+                    const vpsIp = tokenData.vpsIp;
+                    
+                    // IP validation: ONLY VPS target IP can download (clientIp already defined above)
+                    console.log(`[ENCRYPTED BINARY] Download request with token: ${token.substring(0, 8)}...`);
+                    console.log(`  Client IP: ${clientIp}`);
+                    console.log(`  VPS IP (target): ${vpsIp}`);
+                    
+                    if (clientIp !== vpsIp) {
+                        console.error(`[ENCRYPTED BINARY] Access denied: IP=${clientIp} (expected VPS IP: ${vpsIp})`);
+                        return new Response(JSON.stringify({ 
+                            error: 'Forbidden',
+                            message: `IP address ${clientIp} is not authorized. Only VPS target IP ${vpsIp} can download.`
+                        }), {
+                            status: 403,
+                            headers: { 'Content-Type': 'application/json', ...corsHeaders }
+                        });
+                    }
+                    
+                    // Download binary installer from (no encryption, just tokenized URL)
+                    let binaryData;
+                    try {
+                        console.log(`[BINARY INSTALLER] Downloading binary installer from: ${binaryInstallerUrl}`);
+                        const binaryResponse = await fetch(binaryInstallerUrl, {
+                            method: 'GET',
+                            redirect: 'follow',
+                            headers: {
+                                'User-Agent': 'Mozilla/5.0 (compatible; RDP-Installer/1.0)',
+                                'Accept': 'application/octet-stream, */*'
+                            }
+                        });
+                        
+                        if (!binaryResponse.ok) {
+                            throw new Error(`Failed to download binary installer: ${binaryResponse.status} ${binaryResponse.statusText}`);
+                        }
+                        
+                        binaryData = await binaryResponse.arrayBuffer();
+                        console.log(`[BINARY INSTALLER] Binary installer downloaded: ${(binaryData.byteLength / 1024 / 1024).toFixed(2)} MB`);
+                    } catch (downloadError) {
+                        console.error(`[BINARY INSTALLER] Error downloading binary installer: ${downloadError.message}`);
+                        return new Response(JSON.stringify({ 
+                            error: 'Failed to download binary installer',
+                            message: downloadError.message,
+                            details: `Could not download from ${binaryInstallerUrl}`
+                        }), {
+                            status: 500,
+                            headers: { 'Content-Type': 'application/json', ...corsHeaders }
+                        });
+                    }
+                    
+                    console.log(`[BINARY INSTALLER] Streaming binary installer to VPS`);
+                    
+                    // Stream binary installer to VPS (no decryption needed)
+                    return new Response(binaryData, {
+                        status: 200,
+                        headers: {
+                            'Content-Type': 'application/octet-stream',
+                            'Content-Disposition': `attachment; filename="rdp-installer-azovest.img"`,
+                            'Cache-Control': 'no-store, no-cache, must-revalidate, private',
+                            'Pragma': 'no-cache',
+                            'Expires': '0',
+                            ...corsHeaders
+                        }
+                    });
+                    
+                } catch (error) {
+                    console.error('[ENCRYPTED BINARY] Error:', error);
+                    return new Response(JSON.stringify({ 
+                        error: 'Internal Server Error',
+                        message: error.message
+                    }), {
+                        status: 500,
+                        headers: { 'Content-Type': 'application/json', ...corsHeaders }
+                    });
+                }
+            }
+            
+            // Download encrypted image: GET /api/installation/download/:installId
+            // Requires secret key OR IP match (bot server downloads, then SCPs to VPS)
+            // One-time use, streams encrypted image from R2
+            if (path.startsWith('/api/installation/download/') && method === 'GET') {
+                try {
+                    const installId = path.split('/api/installation/download/')[1];
+                    
+                    if (!installId) {
+                        return new Response(JSON.stringify({ error: 'Install ID required' }), {
+                            status: 400,
+                            headers: { 'Content-Type': 'application/json', ...corsHeaders }
+                        });
+                    }
+                    
+                    // Get installation data
+                    const installation = await InstallationManager.getInstallation(kv, installId);
+                    
+                    if (!installation) {
+                        return new Response(JSON.stringify({ error: 'Installation not found' }), {
+                            status: 404,
+                            headers: { 'Content-Type': 'application/json', ...corsHeaders }
+                        });
+                    }
+                    
+                    // IP validation: ONLY VPS target IP can download (not bot server)
+                    // VPS user downloads encrypted .img directly from backend
+                    const clientIp = request.headers.get('CF-Connecting-IP') || request.headers.get('X-Forwarded-For') || 'unknown';
+                    
+                    console.log(`[INSTALL] Download request for ${installId}:`);
+                    console.log(`  Client IP: ${clientIp}`);
+                    console.log(`  VPS IP (target): ${installation.vpsIp}`);
+                    console.log(`  IP match: ${clientIp === installation.vpsIp}`);
+                    
+                    // STRICT: Only VPS target IP can download
+                    if (clientIp !== installation.vpsIp) {
+                        console.error(`[INSTALL] Access denied for ${installId}: IP=${clientIp} (expected VPS IP: ${installation.vpsIp})`);
+                        return new Response(JSON.stringify({ 
+                            error: 'Forbidden',
+                            message: `IP address ${clientIp} is not authorized. Only VPS target IP ${installation.vpsIp} can download.`
+                        }), {
+                            status: 403,
+                            headers: { 'Content-Type': 'application/json', ...corsHeaders }
+                        });
+                    }
+                    
+                    console.log(`[INSTALL] Access granted for ${installId} (VPS IP match)`);
+                    
+                    // Check if encryption key has already been used (one-time use)
+                    if (installation.keyUsed) {
+                        console.error(`[INSTALL] Encryption key already used for ${installId}`);
+                        return new Response(JSON.stringify({ 
+                            error: 'Forbidden',
+                            message: 'Encryption key has already been used. This installation can only be used once.'
+                        }), {
+                            status: 403,
+                            headers: { 'Content-Type': 'application/json', ...corsHeaders }
+                        });
+                    }
+                    
+                    // Check if expired
+                    if (Date.now() > installation.expiresAt) {
+                        return new Response(JSON.stringify({ error: 'Installation expired' }), {
+                            status: 410,
+                            headers: { 'Content-Type': 'application/json', ...corsHeaders }
+                        });
+                    }
+                    
+                    // Check download count
+                    if (installation.downloadCount >= installation.maxDownloads) {
+                        return new Response(JSON.stringify({ 
+                            error: 'Download limit exceeded',
+                            message: `Maximum ${installation.maxDownloads} downloads allowed`
+                        }), {
+                            status: 403,
+                            headers: { 'Content-Type': 'application/json', ...corsHeaders }
+                        });
+                    }
+                    
+                    // Get encrypted binary installer from public URL
+                    const binaryInstallerUrl = installation.binaryInstallerUrl || env.BINARY_INSTALLER_URL || 'https://api.eov.my.id/azovest/rdp-installer-azovest.img';
+                    
+                    let binaryData;
+                    try {
+                        console.log(`[INSTALL] Downloading binary installer from: ${binaryInstallerUrl}`);
+                        const binaryResponse = await fetch(binaryInstallerUrl, {
+                            method: 'GET',
+                            redirect: 'follow',
+                            headers: {
+                                'User-Agent': 'Mozilla/5.0 (compatible; RDP-Installer/1.0)',
+                                'Accept': 'application/octet-stream, */*'
+                            }
+                        });
+                        
+                        if (!binaryResponse.ok) {
+                            throw new Error(`Failed to download binary installer: ${binaryResponse.status} ${binaryResponse.statusText}`);
+                        }
+                        
+                        binaryData = await binaryResponse.arrayBuffer();
+                        console.log(`[INSTALL] Binary installer downloaded: ${(binaryData.byteLength / 1024 / 1024).toFixed(2)} MB`);
+                    } catch (downloadError) {
+                        console.error(`[INSTALL] Error downloading binary installer: ${downloadError.message}`, downloadError);
+                        return new Response(JSON.stringify({ 
+                            error: 'Failed to download binary installer',
+                            message: downloadError.message,
+                            details: `Could not download from ${binaryInstallerUrl}`
+                        }), {
+                            status: 500,
+                            headers: { 'Content-Type': 'application/json', ...corsHeaders }
+                        });
+                    }
+                    
+                    // Mark download count (one-time use)
+                    await InstallationManager.updateInstallation(kv, installId, {
+                        downloadCount: installation.downloadCount + 1,
+                        status: 'downloading',
+                        lastDownloadAt: Date.now(),
+                        lastDownloadIp: clientIp
+                    });
+                    
+                    console.log(`[INSTALL] Streaming binary installer for ${installId}`);
+                    
+                    // Stream binary installer to VPS (no decryption needed)
+                    return new Response(binaryData, {
+                        status: 200,
+                        headers: {
+                            'Content-Type': 'application/octet-stream',
+                            'Content-Disposition': `attachment; filename="rdp-installer-azovest.img"`,
+                            'Cache-Control': 'no-store, no-cache, must-revalidate, private',
+                            'Pragma': 'no-cache',
+                            'Expires': '0',
+                            'X-Install-Id': installId,
+                            'X-Encryption-Key': encryptionKeyBase64, // Key in header (one-time use, already marked as used)
+                            ...corsHeaders
+                        }
+                    });
+                    
+                } catch (error) {
+                    console.error('[INSTALL] Error downloading encrypted image:', error);
+                    return new Response(JSON.stringify({ 
+                        error: 'Internal Server Error',
+                        message: error.message
+                    }), {
+                        status: 500,
+                        headers: { 'Content-Type': 'application/json', ...corsHeaders }
+                    });
+                }
+            }
+            
+            // Upload encrypted image to R2: POST /api/installation/upload-r2?key=<r2-key>
+            // Admin uploads pre-encrypted rdp-installer-azovest.img to R2
+            if (path === '/api/installation/upload-r2' && method === 'POST') {
+                try {
+                    // Validate secret key
+                    const secretHeader = request.headers.get('X-Api-Secret') || '';
+                    const expectedSecret = env.API_SECRET_KEY;
+                    
+                    if (!expectedSecret || secretHeader !== expectedSecret) {
+                        console.error(`[UPLOAD R2] Invalid secret key`);
+                        return new Response(JSON.stringify({ 
+                            error: 'Unauthorized',
+                            message: 'Invalid secret key'
+                        }), {
+                            status: 401,
+                            headers: { 'Content-Type': 'application/json', ...corsHeaders }
+                        });
+                    }
+                    
+                    // Get R2 key from query parameter
+                    const r2Key = url.searchParams.get('key') || 'encrypted/rdp-installer-azovest.img.enc';
+                    
+                    // Get encrypted image from request body
+                    const encryptedData = await request.arrayBuffer();
+                    
+                    if (!encryptedData || encryptedData.byteLength === 0) {
+                        return new Response(JSON.stringify({ error: 'Encrypted image data required' }), {
+                            status: 400,
+                            headers: { 'Content-Type': 'application/json', ...corsHeaders }
+                        });
+                    }
+                    
+                    console.log(`[UPLOAD R2] Uploading encrypted binary installer: ${r2Key} (${(encryptedData.byteLength / 1024 / 1024).toFixed(2)} MB)`);
+                    
+                    // Store in R2
+                    try {
+                        await r2.put(r2Key, encryptedData, {
+                            customMetadata: {
+                                uploadedAt: Date.now().toString(),
+                                encryptedSize: encryptedData.byteLength.toString(),
+                                uploadedBy: 'admin'
+                            }
+                        });
+                        console.log(`[UPLOAD R2] Encrypted binary installer uploaded to R2: ${r2Key}`);
+                    } catch (r2PutError) {
+                        console.error(`[UPLOAD R2] Error uploading to R2: ${r2PutError.message}`);
+                        return new Response(JSON.stringify({ 
+                            error: 'Failed to upload encrypted binary installer to R2',
+                            message: r2PutError.message
+                        }), {
+                            status: 500,
+                            headers: { 'Content-Type': 'application/json', ...corsHeaders }
+                        });
+                    }
+                    
+                    return new Response(JSON.stringify({
+                        success: true,
+                        message: 'Encrypted binary installer uploaded successfully',
+                        r2Key
+                    }), {
+                        headers: { 'Content-Type': 'application/json', ...corsHeaders }
+                    });
+                    
+                } catch (error) {
+                    console.error('[UPLOAD R2] Error uploading encrypted image:', error);
+                    return new Response(JSON.stringify({ 
+                        error: 'Internal Server Error',
+                        message: error.message
+                    }), {
+                        status: 500,
+                        headers: { 'Content-Type': 'application/json', ...corsHeaders }
+                    });
+                }
+            }
+            
+            // Upload encrypted image: POST /api/installation/upload/:installId (legacy, not used)
+            if (path.startsWith('/api/installation/upload/') && method === 'POST') {
+                try {
+                    const installId = path.split('/api/installation/upload/')[1];
+                    
+                    if (!installId) {
+                        return new Response(JSON.stringify({ error: 'Install ID required' }), {
+                            status: 400,
+                            headers: { 'Content-Type': 'application/json', ...corsHeaders }
+                        });
+                    }
+                    
+                    // Get installation data
+                    const installation = await InstallationManager.getInstallation(kv, installId);
+                    
+                    if (!installation) {
+                        return new Response(JSON.stringify({ error: 'Installation not found' }), {
+                            status: 404,
+                            headers: { 'Content-Type': 'application/json', ...corsHeaders }
+                        });
+                    }
+                    
+                    // Validate secret key
+                    const secretHeader = request.headers.get('X-Api-Secret') || '';
+                    const expectedSecret = env.API_SECRET_KEY;
+                    
+                    if (!expectedSecret || secretHeader !== expectedSecret) {
+                        console.error(`[INSTALL] Invalid secret key for upload ${installId}`);
+                        return new Response(JSON.stringify({ 
+                            error: 'Unauthorized',
+                            message: 'Invalid secret key'
+                        }), {
+                            status: 401,
+                            headers: { 'Content-Type': 'application/json', ...corsHeaders }
+                        });
+                    }
+                    
+                    // Get encrypted image from request body
+                    const encryptedData = await request.arrayBuffer();
+                    
+                    if (!encryptedData || encryptedData.byteLength === 0) {
+                        return new Response(JSON.stringify({ error: 'Encrypted image data required' }), {
+                            status: 400,
+                            headers: { 'Content-Type': 'application/json', ...corsHeaders }
+                        });
+                    }
+                    
+                    console.log(`[INSTALL] Uploading encrypted image for ${installId}: ${(encryptedData.byteLength / 1024 / 1024).toFixed(2)} MB`);
+                    
+                    // Store in R2
+                    const r2Key = `encrypted/${installId}.img.enc`;
+                    try {
+                        await r2.put(r2Key, encryptedData, {
+                            customMetadata: {
+                                installId,
+                                osVersion: installation.osVersion,
+                                createdAt: Date.now().toString(),
+                                encryptedSize: encryptedData.byteLength.toString(),
+                                uploadedBy: 'bot-server'
+                            }
+                        });
+                        console.log(`[INSTALL] Encrypted image uploaded to R2: ${r2Key}`);
+                    } catch (r2PutError) {
+                        console.error(`[INSTALL] Error uploading to R2: ${r2PutError.message}`);
+                        return new Response(JSON.stringify({ 
+                            error: 'Failed to upload encrypted image to R2',
+                            message: r2PutError.message
+                        }), {
+                            status: 500,
+                            headers: { 'Content-Type': 'application/json', ...corsHeaders }
+                        });
+                    }
+                    
+                    // Update installation status
+                    await InstallationManager.updateInstallation(kv, installId, {
+                        status: 'encrypted',
+                        encryptedAt: Date.now()
+                    });
+                    
+                    return new Response(JSON.stringify({
+                        success: true,
+                        message: 'Encrypted image uploaded successfully',
+                        r2Key
+                    }), {
+                        headers: { 'Content-Type': 'application/json', ...corsHeaders }
+                    });
+                    
+                } catch (error) {
+                    console.error('[INSTALL] Error uploading encrypted image:', error);
+                    return new Response(JSON.stringify({ 
+                        error: 'Internal Server Error',
+                        message: error.message
+                    }), {
+                        status: 500,
+                        headers: { 'Content-Type': 'application/json', ...corsHeaders }
+                    });
+                }
+            }
+            
+            // Complete installation: POST /api/installation/complete/:installId
+            // Cleanup encrypted image from R2 and delete encryption key
+            if (path.startsWith('/api/installation/complete/') && method === 'POST') {
+                try {
+                    const installId = path.split('/api/installation/complete/')[1];
+                    
+                    if (!installId) {
+                        return new Response(JSON.stringify({ error: 'Install ID required' }), {
+                            status: 400,
+                            headers: { 'Content-Type': 'application/json', ...corsHeaders }
+                        });
+                    }
+                    
+                    // Get installation data
+                    const installation = await InstallationManager.getInstallation(kv, installId);
+                    
+                    if (!installation) {
+                        return new Response(JSON.stringify({ error: 'Installation not found' }), {
+                            status: 404,
+                            headers: { 'Content-Type': 'application/json', ...corsHeaders }
+                        });
+                    }
+                    
+                    // IP validation (optional for complete endpoint)
+                    const clientIp = request.headers.get('CF-Connecting-IP') || request.headers.get('X-Forwarded-For') || 'unknown';
+                    
+                    // Parse request body
+                    let body = {};
+                    try {
+                        body = await request.json();
+                    } catch (e) {
+                        // Body is optional
+                    }
+                    
+                    // Update status before cleanup
+                    await InstallationManager.updateInstallation(kv, installId, {
+                        status: body.exitCode === 0 ? 'completed' : 'failed',
+                        exitCode: body.exitCode || 0,
+                        completedAt: Date.now(),
+                        completedFrom: clientIp
+                    });
+                    
+                    // Cleanup (delete encrypted image and key)
+                    const result = await InstallationManager.cleanup(kv, r2, installId);
+                    
+                    console.log(`[INSTALL] Installation ${installId} completed and cleaned up`);
+                    
+                    return new Response(JSON.stringify({
+                        success: true,
+                        ...result
+                    }), {
+                        headers: { 'Content-Type': 'application/json', ...corsHeaders }
+                    });
+                    
+                } catch (error) {
+                    console.error('[INSTALL] Error completing installation:', error);
+                    return new Response(JSON.stringify({ 
+                        error: 'Internal Server Error',
+                        message: error.message
+                    }), {
+                        status: 500,
+                        headers: { 'Content-Type': 'application/json', ...corsHeaders }
+                    });
+                }
+            }
+            
+            // Get installation status: GET /api/installation/status/:installId
+            if (path.startsWith('/api/installation/status/') && method === 'GET' && !path.includes('/api/installation-status/')) {
+                try {
+                    const installId = path.split('/api/installation/status/')[1];
+                    
+                    if (!installId) {
+                        return new Response(JSON.stringify({ error: 'Install ID required' }), {
+                            status: 400,
+                            headers: { 'Content-Type': 'application/json', ...corsHeaders }
+                        });
+                    }
+                    
+                    const installation = await InstallationManager.getInstallation(kv, installId);
+                    
+                    if (!installation) {
+                        return new Response(JSON.stringify({ 
+                            success: false,
+                            error: 'Installation not found'
+                        }), {
+                            status: 404,
+                            headers: { 'Content-Type': 'application/json', ...corsHeaders }
+                        });
+                    }
+                    
+                    // Return status without sensitive data (no encryption key, especially if already used)
+                    const { encryptionKey, ...safeData } = installation;
+                    
+                    // Don't return encryption key even if not used (security)
+                    // Key is only sent in download response header (one-time use)
+                    
+                    return new Response(JSON.stringify({
+                        success: true,
+                        ...safeData
+                    }), {
+                        headers: { 'Content-Type': 'application/json', ...corsHeaders }
+                    });
+                    
+                } catch (error) {
+                    console.error('[INSTALL] Error getting installation status:', error);
+                    return new Response(JSON.stringify({ 
+                        error: 'Internal Server Error',
+                        message: error.message
+                    }), {
+                        status: 500,
+                        headers: { 'Content-Type': 'application/json', ...corsHeaders }
+                    });
+                }
+            }
+            
+            // Generate token untuk image URL
+            // Support both original path and obfuscated path for backward compatibility
+            if ((path === '/api/generate-img-url-token' || path === '/x/gi') && method === 'POST') {
+                const body = await request.json();
+                const { osVersion } = body;
+                
+                if (!osVersion) {
+                    return new Response(JSON.stringify({ error: 'OS version required' }), {
+                        status: 400,
+                        headers: {
+                            'Content-Type': 'application/json',
+                            ...corsHeaders
+                        }
+                    });
+                }
+                
+                // Check if KV is available
+                if (!kv) {
+                    console.error('[GENERATE TOKEN] KV namespace TOKEN_STORAGE not bound');
+                    return new Response(JSON.stringify({ 
+                        error: 'Backend configuration error: KV namespace not bound',
+                        details: 'Please bind TOKEN_STORAGE KV namespace to worker'
+                    }), {
+                        status: 500,
+                        headers: {
+                            'Content-Type': 'application/json',
+                            ...corsHeaders
+                        }
+                    });
+                }
+                
+                // Check if it's a direct URL
+                if (osVersion.startsWith('http://') || osVersion.startsWith('https://')) {
+                    if (!osVersion.includes('.gz')) {
+                        return new Response(JSON.stringify({ error: 'Invalid image URL (must contain .gz)' }), {
+                            status: 400,
+                            headers: {
+                                'Content-Type': 'application/json',
+                                ...corsHeaders
+                            }
+                        });
+                    }
+                    const token = await generateToken(kv, 'image', { url: osVersion, osVersion: 'custom' });
+                    // Mask URL untuk security (hanya log domain, bukan full URL)
+                    const maskedUrl = osVersion.replace(/https?:\/\/([^\/]+).*/, '$1/***');
+                    console.info(`[GENERATE TOKEN] Generated token for custom URL: ${maskedUrl}`);
+                    return new Response(JSON.stringify({ success: true, token }), {
+                        headers: {
+                            'Content-Type': 'application/json',
+                            ...corsHeaders
+                        }
+                    });
+                }
+                
+                const imageUrl = BASE_IMAGE_URL_MAP[osVersion];
+                if (!imageUrl) {
+                    return new Response(JSON.stringify({ 
+                        error: 'Invalid OS version',
+                        available: Object.keys(BASE_IMAGE_URL_MAP)
+                    }), {
+                        status: 400,
+                        headers: {
+                            'Content-Type': 'application/json',
+                            ...corsHeaders
+                        }
+                    });
+                }
+                
+                const token = await generateToken(kv, 'image', { url: imageUrl, osVersion });
+                // Mask URL untuk security (hanya log domain + filename, bukan full path)
+                const urlParts = imageUrl.split('/');
+                const filename = urlParts[urlParts.length - 1];
+                const domain = imageUrl.replace(/https?:\/\/([^\/]+).*/, '$1');
+                console.info(`[GENERATE TOKEN] Generated token for OS: ${osVersion}, file: ${filename}, domain: ${domain}`);
+                
+                return new Response(JSON.stringify({
+                    success: true,
+                    token
+                }), {
+                    headers: {
+                        'Content-Type': 'application/json',
+                        ...corsHeaders
+                    }
+                });
+            }
+            
+            // Get image URL dengan token (one-time use)
+            // Support both original path and obfuscated path
+            const isImageRequest = path.startsWith('/api/image/') || path.startsWith('/i/');
+            if (isImageRequest && method === 'GET') {
+                const token = path.startsWith('/i/') 
+                    ? path.split('/i/')[1] 
+                    : path.split('/api/image/')[1];
+                
+                if (!token) {
+                    return new Response(JSON.stringify({ error: 'Token required' }), {
+                        status: 400,
+                        headers: {
+                            'Content-Type': 'application/json',
+                            ...corsHeaders
+                        }
+                    });
+                }
+                
+                // Check if KV is available
+                if (!kv) {
+                    console.error('[IMAGE] KV namespace TOKEN_STORAGE not bound');
+                    return new Response(JSON.stringify({ 
+                        error: 'Backend configuration error: KV namespace not bound' 
+                    }), {
+                        status: 500,
+                        headers: {
+                            'Content-Type': 'application/json',
+                            ...corsHeaders
+                        }
+                    });
+                }
+                
+                // Check KV first
+                if (!kv) {
+                    console.error(`[IMAGE] KV namespace TOKEN_STORAGE not bound`);
+                    return new Response('Backend configuration error: KV namespace not bound', {
+                        status: 500,
+                        headers: {
+                            'Content-Type': 'text/plain; charset=utf-8'
+                        }
+                    });
+                }
+                
+                // Get client IP for IP binding validation
+                const clientIp = request.headers.get('CF-Connecting-IP') || 
+                                request.headers.get('X-Forwarded-For')?.split(',')[0]?.trim() || 
+                                'unknown';
+                
+                const validation = await validateToken(kv, token, 'image', clientIp);
+                
+                if (!validation.valid) {
+                    console.error(`[IMAGE] Token validation failed for token: ${token.substring(0, 8)}... Error: ${validation.error}`);
+                    // Return 403 dengan plain text error (tidak JSON, tidak binary)
+                    // wget tidak akan save sebagai file jika bukan 200 dengan binary content
+                    return new Response(`Error: ${validation.error}`, {
+                        status: 403,
+                        headers: {
+                            'Content-Type': 'text/plain; charset=utf-8',
+                            'Content-Disposition': 'inline' // Jangan download sebagai file
+                        }
+                    });
+                }
+                
+                const imageUrl = validation.data.url;
+                
+                // Pastikan URL asli memiliki nama file yang benar (.gz extension)
+                // Exception: allow dev.js URLs (Google Drive Index)
+                const isDevJsUrl = imageUrl.includes('/download.aspx?file=') || 
+                                   imageUrl.includes('/api/direct-download?id=') ||
+                                   imageUrl.includes('/direct/');
+                if (!isDevJsUrl && !imageUrl.toLowerCase().endsWith('.gz')) {
+                    // Mask URL untuk security
+                    const maskedUrl = imageUrl.replace(/https?:\/\/([^\/]+).*/, '$1/***');
+                    console.error(`[IMAGE] Invalid image URL (must end with .gz): ${maskedUrl}`);
+                    return new Response('Invalid image URL format', {
+                        status: 400,
+                        headers: {
+                            'Content-Type': 'text/plain; charset=utf-8'
+                        }
+                    });
+                }
+                
+                // Extract filename dan domain dari URL untuk logging (tidak expose full URL)
+                const urlParts = imageUrl.split('/');
+                const filename = urlParts[urlParts.length - 1];
+                const domain = imageUrl.replace(/https?:\/\/([^\/]+).*/, '$1');
+                console.info(`[IMAGE] Token validation success for token: ${token.substring(0, 8)}... file: ${filename}, domain: ${domain}`);
+                
+                // PROXY MODE: Fetch dan stream file content langsung (tidak redirect)
+                // URL asli TIDAK akan terlihat di network logger karena semua request melalui backend
+                // wget tidak perlu -L flag karena tidak ada redirect
+                console.info(`[IMAGE] Fetching image from: ${imageUrl.substring(0, 50)}...`);
+                
+                try {
+                    let imageResponse;
+                    
+                    // SPECIAL: dev.js URLs need JSON mode to bypass Worker-to-Worker blocking
+                    if (imageUrl.includes('/direct/')) {
+                        console.info(`[IMAGE] Detected dev.js URL - using JSON mode`);
+                        
+                        // Step 1: Get Google Drive URL + token from dev.js
+                        const jsonUrl = imageUrl + (imageUrl.includes('?') ? '&' : '?') + 'mode=json';
+                        console.info(`[IMAGE] Fetching metadata from: ${jsonUrl}`);
+                        
+                        const jsonResponse = await fetch(jsonUrl, {
+                            method: 'GET',
+                            headers: {
+                                'Accept': 'application/json'
+                            }
+                        });
+                        
+                        if (!jsonResponse.ok) {
+                            console.error(`[IMAGE] Failed to get metadata: ${jsonResponse.status}`);
+                            const errorText = await jsonResponse.text();
+                            return new Response(`Failed to get download URL: ${errorText}`, {
+                                status: jsonResponse.status,
+                                headers: { 'Content-Type': 'text/plain; charset=utf-8' }
+                            });
+                        }
+                        
+                        const jsonData = await jsonResponse.json();
+                        console.info(`[IMAGE] Got Google Drive URL for: ${jsonData.fileInfo.name}`);
+                        
+                        // Step 2: Fetch directly from Google Drive API
+                        console.info(`[IMAGE] Downloading from Google Drive API...`);
+                        imageResponse = await fetch(jsonData.url, {
+                            method: 'GET',
+                            headers: {
+                                'Authorization': jsonData.headers.Authorization,
+                                'User-Agent': 'Mozilla/5.0 (compatible; RDP-Installer/1.0)'
+                            }
+                        });
+                        
+                        console.info(`[IMAGE] Google Drive response: ${imageResponse.status}`);
+                        
+                    } else {
+                        // NORMAL: Direct fetch for VPS URLs
+                        console.info(`[IMAGE] Direct fetch from URL...`);
+                        imageResponse = await fetch(imageUrl, {
+                            method: 'GET',
+                            redirect: 'follow',
+                            headers: {
+                                'User-Agent': 'Mozilla/5.0 (compatible; RDP-Installer/1.0)',
+                                'Accept': 'application/gzip, application/octet-stream, */*'
+                            }
+                        });
+                    }
+                    
+                    if (!imageResponse.ok) {
+                        console.error(`[IMAGE] Failed to fetch image: ${imageResponse.status} ${imageResponse.statusText}`);
+                        return new Response(`Failed to fetch image: ${imageResponse.status}`, {
+                            status: imageResponse.status,
+                            headers: {
+                                'Content-Type': 'text/plain; charset=utf-8'
+                            }
+                        });
+                    }
+                    
+                    // Stream file content langsung ke client
+                    // ✅ SECURITY: Header 100% dikontrol sendiri, TIDAK forward header dari upstream
+                    // ✅ URL asli (juhuw.info) TIDAK akan terlihat di browser network tab
+                    const contentLength = imageResponse.headers.get('Content-Length');
+
+                    // ✅ SAFE HEADERS: Hanya header yang aman, tidak expose URL asli
+                    const safeHeaders = {
+                        'Content-Type': 'application/gzip',
+                        'Cache-Control': 'no-store, no-cache, must-revalidate, private',
+                        'Pragma': 'no-cache',
+                        'Expires': '0',
+                        'X-DNS-Prefetch-Control': 'off',
+                        'X-Content-Type-Options': 'nosniff',
+                        // ✅ Hide original filename
+                        'Content-Disposition': 'attachment; filename="image.gz"',
+                        // ✅ Security: No referer, no location, no upstream headers
+                        // ❌ TIDAK include: Location, Referer, X-Forwarded-URL, atau header lain yang expose URL
+                    };
+
+                    // ❌ JANGAN forward Content-Length dari upstream (bisa expose info)
+                    // ❌ JANGAN forward header lain dari upstream (bisa expose URL)
+
+                    console.info(
+                        `[IMAGE] Successfully proxying image: ${filename}, origin length: ${contentLength || 'unknown'}`
+                    );
+
+                    // ✅ Response: Stream body saja, headers 100% dikontrol sendiri
+                    return new Response(imageResponse.body, {
+                        status: 200,
+                        headers: safeHeaders,
+                    });
+
+                    // ==== END: blok baru yang ramah wget ====
+
+                    
+                } catch (fetchError) {
+                    console.error(`[IMAGE] Error fetching image: ${fetchError.message}`);
+                    return new Response(`Failed to fetch image from source: ${fetchError.message}`, {
+                        status: 502,
+                        headers: {
+                            'Content-Type': 'text/plain; charset=utf-8'
+                        }
+                    });
+                }
+            }
+            
+            // Generate token untuk script
+            // Support both original path and obfuscated path
+            if ((path === '/api/generate-script-token' || path === '/x/gs') && method === 'POST') {
+                const body = await request.json();
+                const { scriptType, rdpPort, vpsIp } = body;
+                
+                // Get client IP if vpsIp not provided (for IP binding)
+                const clientIp = request.headers.get('CF-Connecting-IP') || 
+                                request.headers.get('X-Forwarded-For')?.split(',')[0]?.trim() || 
+                                null;
+                const targetVpsIp = vpsIp || clientIp;
+                
+                if (!scriptType) {
+                    return new Response(JSON.stringify({ error: 'Script type required' }), {
+                        status: 400,
+                        headers: {
+                            'Content-Type': 'application/json',
+                            ...corsHeaders
+                        }
+                    });
+                }
+                
+                const scriptUrl = SCRIPT_URLS[scriptType];
+                if (!scriptUrl) {
+                    return new Response(JSON.stringify({ error: 'Invalid script type' }), {
+                        status: 400,
+                        headers: {
+                            'Content-Type': 'application/json',
+                            ...corsHeaders
+                        }
+                    });
+                }
+                
+                // MUST bind to VPS IP target (required for security)
+                const token = await generateToken(kv, 'script', {
+                    url: scriptUrl,
+                    scriptType,
+                    rdpPort: rdpPort || 22,
+                    vpsIp: targetVpsIp // Bind to VPS IP target
+                });
+                
+                return new Response(JSON.stringify({
+                    success: true,
+                    token
+                }), {
+                    headers: {
+                        'Content-Type': 'application/json',
+                        ...corsHeaders
+                    }
+                });
+            }
+            
+            // Get script dengan token (one-time use)
+            // Get script dengan token (proxied, tidak expose URL asli)
+            // Support both original path and obfuscated path
+const isScriptRequest = path.startsWith('/api/script/') || path.startsWith('/s/');
+if (isScriptRequest && method === 'GET') {
+    const token = path.startsWith('/s/') 
+        ? path.split('/s/')[1] 
+        : path.split('/api/script/')[1];
+    if (!token) {
+        return new Response('Token required', {
+            status: 400,
+            headers: {
+                'Content-Type': 'text/plain; charset=utf-8',
+                ...corsHeaders,
+            },
+        });
+    }
+
+    // Get client IP for IP binding validation
+    const clientIp = request.headers.get('CF-Connecting-IP') || 
+                    request.headers.get('X-Forwarded-For')?.split(',')[0]?.trim() || 
+                    'unknown';
+    
+    const validation = await validateToken(kv, token, 'script', clientIp);
+
+    if (!validation.valid) {
+        return new Response(`Error: ${validation.error}`, {
+            status: 403,
+            headers: {
+                'Content-Type': 'text/plain; charset=utf-8',
+                ...corsHeaders,
+            },
+        });
+    }
+
+    const scriptUrl = validation.data.url;
+
+    try {
+        // Fetch script dari origin (server-side, tidak terlihat di browser)
+        const scriptResp = await fetch(scriptUrl, {
+            method: 'GET',
+            redirect: 'follow',
+            headers: {
+                'User-Agent': 'Mozilla/5.0 (compatible; RDP-Installer/1.0)',
+                'Accept': 'text/plain, */*',
+                'Referer': '',
+            },
+        });
+
+        if (!scriptResp.ok) {
+            console.error(
+                `[SCRIPT] Failed to fetch script: ${scriptResp.status} ${scriptResp.statusText}`,
+            );
+            return new Response(
+                `Failed to fetch script: ${scriptResp.status}`,
+                {
+                    status: scriptResp.status,
+                    headers: {
+                        'Content-Type': 'text/plain; charset=utf-8',
+                    },
+                },
+            );
+        }
+
+        // Tentukan nama file dari URL (reinstall.sh, trans.sh, dll)
+        const urlParts = scriptUrl.split('/');
+        const filename =
+            urlParts[urlParts.length - 1] || 'script.sh';
+
+        const contentLength =
+            scriptResp.headers.get('Content-Length');
+
+        // Header aman (tidak ada Location, Link, dll)
+        const safeHeaders = {
+            'Content-Type': 'text/plain; charset=utf-8',
+            'Cache-Control':
+                'no-store, no-cache, must-revalidate, private',
+            'Pragma': 'no-cache',
+            'Expires': '0',
+            'X-DNS-Prefetch-Control': 'off',
+            'X-Content-Type-Options': 'nosniff',
+            'Content-Disposition': `attachment; filename="${filename}"`,
+        };
+
+        if (contentLength) {
+            safeHeaders['Content-Length'] = contentLength;
+        }
+
+        console.info(
+            `[SCRIPT] Successfully proxying script: ${filename}, size: ${
+                contentLength || 'unknown'
+            }`,
+        );
+
+        // Stream body script ke client (tanpa redirect)
+        return new Response(scriptResp.body, {
+            status: 200,
+            headers: safeHeaders,
+        });
+    } catch (e) {
+        console.error(`[SCRIPT] Error fetching script: ${e.message}`);
+        return new Response(
+            `Failed to fetch script from source: ${e.message}`,
+            {
+                status: 502,
+                headers: {
+                    'Content-Type': 'text/plain; charset=utf-8',
+                },
+            },
+        );
+            }
+}
+
+            // ============================================================================
+            // DECRYPT ENCRYPTED SCRIPTS ON-THE-FLY
+            // ============================================================================
+            // Endpoint: /api/decrypt-script/{token} atau /ds/{token}
+            // Request body: { scriptName: "tele.sh.enc" | "reinstall.sh.enc" | "trans.sh.enc" }
+            // Backend decrypt script dari .img dan stream ke VPS
+            const isDecryptScriptRequest = path.startsWith('/api/decrypt-script/') || path.startsWith('/ds/');
+            if (isDecryptScriptRequest && method === 'POST') {
+                try {
+                    console.log('[DECRYPT SCRIPT] Request received');
+                    const token = path.startsWith('/ds/') 
+                        ? path.split('/ds/')[1] 
+                        : path.split('/api/decrypt-script/')[1];
+                    
+                    if (!token) {
+                        console.error('[DECRYPT SCRIPT] Token missing');
+                        return new Response(JSON.stringify({ error: 'Token required' }), {
+                            status: 400,
+                            headers: { 'Content-Type': 'application/json', ...corsHeaders }
+                        });
+                    }
+                    
+                    console.log(`[DECRYPT SCRIPT] Token: ${token.substring(0, 16)}...`);
+                    
+                    // Get client IP for IP binding validation
+                    const clientIp = request.headers.get('CF-Connecting-IP') || 
+                                    request.headers.get('X-Forwarded-For')?.split(',')[0]?.trim() || 
+                                    'unknown';
+                    
+                    // Validate token (use 'script' type for now, bisa diganti ke 'decrypt-script' nanti)
+                    const validation = await validateToken(kv, token, 'script', clientIp);
+                    
+                    if (!validation.valid) {
+                        console.error(`[DECRYPT SCRIPT] Token validation failed: ${validation.error}`);
+                        return new Response(JSON.stringify({ 
+                            error: 'Invalid token',
+                            message: validation.error
+                        }), {
+                            status: 403,
+                            headers: { 'Content-Type': 'application/json', ...corsHeaders }
+                        });
+                    }
+                    
+                    console.log('[DECRYPT SCRIPT] Token validated successfully');
+                    
+                    // Parse request body untuk mendapatkan scriptName
+                    let body = {};
+                    try {
+                        body = await request.json();
+                    } catch (e) {
+                        return new Response(JSON.stringify({ error: 'Invalid request body' }), {
+                            status: 400,
+                            headers: { 'Content-Type': 'application/json', ...corsHeaders }
+                        });
+                    }
+                    
+                    const { scriptName } = body;
+                    if (!scriptName) {
+                        return new Response(JSON.stringify({ error: 'scriptName required' }), {
+                            status: 400,
+                            headers: { 'Content-Type': 'application/json', ...corsHeaders }
+                        });
+                    }
+                    
+                    // Validate scriptName (hanya allow tele.sh.enc, reinstall.sh.enc, trans.sh.enc)
+                    const allowedScripts = ['tele.sh.enc', 'reinstall.sh.enc', 'trans.sh.enc'];
+                    if (!allowedScripts.includes(scriptName)) {
+                        return new Response(JSON.stringify({ 
+                            error: 'Invalid script name',
+                            message: `Allowed: ${allowedScripts.join(', ')}`
+                        }), {
+                            status: 400,
+                            headers: { 'Content-Type': 'application/json', ...corsHeaders }
+                        });
+                    }
+                    
+                    // Get SCRIPT_ENCRYPTION_KEY from environment
+                    const scriptEncryptionKey = env.SCRIPT_ENCRYPTION_KEY;
+                    if (!scriptEncryptionKey) {
+                        console.error('[DECRYPT SCRIPT] SCRIPT_ENCRYPTION_KEY not configured');
+                        console.error('[DECRYPT SCRIPT] Please set SCRIPT_ENCRYPTION_KEY in wrangler.toml or environment variables');
+                        return new Response(JSON.stringify({ 
+                            error: 'Server configuration error',
+                            message: 'Script decryption key not configured. Please set SCRIPT_ENCRYPTION_KEY environment variable.'
+                        }), {
+                            status: 500,
+                            headers: { 'Content-Type': 'application/json', ...corsHeaders }
+                        });
+                    }
+                    
+                    console.log('[DECRYPT SCRIPT] Encryption key found');
+                    
+                    // Get installation data untuk mendapatkan .img location
+                    const installId = validation.data.installId;
+                    let imgData = null;
+                    
+                    if (installId) {
+                        // Try to get installation data
+                        const installationData = await InstallationManager.getInstallation(kv, installId);
+                        if (installationData && installationData.binaryInstallerUrl) {
+                            // Download .img dari URL (atau dari R2 jika sudah di-upload)
+                            // For now, kita asumsikan .img sudah di-extract di VPS
+                            // VPS akan kirim encrypted script content via request body
+                            console.log(`[DECRYPT SCRIPT] Installation ID: ${installId}`);
+                        }
+                    }
+                    
+                    // Check if encrypted script content is provided in request body
+                    // (VPS extract .img dan kirim .enc file content)
+                    const { encryptedContent } = body;
+                    
+                    if (!encryptedContent) {
+                        console.error('[DECRYPT SCRIPT] Encrypted content missing in request body');
+                        return new Response(JSON.stringify({ 
+                            error: 'Encrypted content required',
+                            message: 'VPS must extract .img and send encrypted script content in request body'
+                        }), {
+                            status: 400,
+                            headers: { 'Content-Type': 'application/json', ...corsHeaders }
+                        });
+                    }
+                    
+                    console.log(`[DECRYPT SCRIPT] Encrypted content received (${encryptedContent.length} chars base64)`);
+                    
+                    // Decode base64 encrypted content
+                    let encryptedBuffer;
+                    try {
+                        encryptedBuffer = Uint8Array.from(atob(encryptedContent), c => c.charCodeAt(0));
+                        console.log(`[DECRYPT SCRIPT] Base64 decoded successfully (${encryptedBuffer.length} bytes)`);
+                    } catch (e) {
+                        console.error('[DECRYPT SCRIPT] Base64 decode failed:', e.message);
+                        return new Response(JSON.stringify({ 
+                            error: 'Invalid encrypted content',
+                            message: `Failed to decode base64 encrypted content: ${e.message}`
+                        }), {
+                            status: 400,
+                            headers: { 'Content-Type': 'application/json', ...corsHeaders }
+                        });
+                    }
+                    
+                    // Extract IV (first 16 bytes), AuthTag (next 16 bytes), Encrypted Data (rest)
+                    if (encryptedBuffer.length < 32) {
+                        console.error(`[DECRYPT SCRIPT] Encrypted content too short: ${encryptedBuffer.length} bytes (need at least 32)`);
+                        return new Response(JSON.stringify({ 
+                            error: 'Invalid encrypted content',
+                            message: `Encrypted content too short: ${encryptedBuffer.length} bytes (must include IV + AuthTag + Data, minimum 32 bytes)`
+                        }), {
+                            status: 400,
+                            headers: { 'Content-Type': 'application/json', ...corsHeaders }
+                        });
+                    }
+                    
+                    console.log(`[DECRYPT SCRIPT] Extracting IV (16 bytes), AuthTag (16 bytes), Data (${encryptedBuffer.length - 32} bytes)`);
+                    
+                    const iv = encryptedBuffer.slice(0, 16);
+                    const authTag = encryptedBuffer.slice(16, 32);
+                    const encryptedData = encryptedBuffer.slice(32);
+                    
+                    // Import encryption key
+                    let decryptionKey;
+                    try {
+                        decryptionKey = await EncryptionService.importKey(scriptEncryptionKey);
+                    } catch (e) {
+                        console.error('[DECRYPT SCRIPT] Failed to import decryption key:', e.message);
+                        return new Response(JSON.stringify({ 
+                            error: 'Server configuration error',
+                            message: 'Failed to load decryption key'
+                        }), {
+                            status: 500,
+                            headers: { 'Content-Type': 'application/json', ...corsHeaders }
+                        });
+                    }
+                    
+                    // Decrypt script
+                    let decryptedData;
+                    try {
+                        decryptedData = await EncryptionService.decrypt(
+                            encryptedData.buffer,
+                            iv,
+                            authTag,
+                            decryptionKey
+                        );
+                    } catch (e) {
+                        console.error('[DECRYPT SCRIPT] Decryption failed:', e.message);
+                        return new Response(JSON.stringify({ 
+                            error: 'Decryption failed',
+                            message: 'Invalid encryption key or corrupted data'
+                        }), {
+                            status: 400,
+                            headers: { 'Content-Type': 'application/json', ...corsHeaders }
+                        });
+                    }
+                    
+                    // Convert decrypted data to text
+                    const decryptedText = new TextDecoder('utf-8').decode(decryptedData);
+                    
+                    // Determine output filename (remove .enc extension)
+                    const outputFilename = scriptName.replace(/\.enc$/, '');
+                    
+                    console.log(`[DECRYPT SCRIPT] Successfully decrypted ${scriptName} (${decryptedText.length} bytes)`);
+                    
+                    // Stream decrypted script to VPS
+                    return new Response(decryptedText, {
+                        status: 200,
+                        headers: {
+                            'Content-Type': 'text/plain; charset=utf-8',
+                            'Content-Disposition': `attachment; filename="${outputFilename}"`,
+                            'Cache-Control': 'no-store, no-cache, must-revalidate, private',
+                            'Pragma': 'no-cache',
+                            'Expires': '0',
+                            'X-Content-Type-Options': 'nosniff',
+                            ...corsHeaders
+                        }
+                    });
+                    
+                } catch (error) {
+                    console.error('[DECRYPT SCRIPT] Error:', error);
+                    return new Response(JSON.stringify({ 
+                        error: 'Internal Server Error',
+                        message: error.message
+                    }), {
+                        status: 500,
+                        headers: { 'Content-Type': 'application/json', ...corsHeaders }
+                    });
+                }
+            }
+            
+            // Generate token untuk confhome (reinstall.sh)
+            // Support both original path and obfuscated path
+            if ((path === '/api/generate-confhome-token' || path === '/x/gc') && method === 'POST') {
+                // Parse request body untuk mendapatkan VPS IP
+                let body = {};
+                try {
+                    body = await request.json();
+                } catch (e) {
+                    // Body kosong atau invalid, lanjut dengan default
+                }
+                
+                const vpsIp = body.vpsIp || null;
+                
+                if (!vpsIp) {
+                    return new Response(JSON.stringify({ 
+                        error: 'Bad Request',
+                        message: 'vpsIp is required for confhome token generation'
+                    }), {
+                        status: 400,
+                        headers: {
+                            'Content-Type': 'application/json',
+                            ...corsHeaders
+                        }
+                    });
+                }
+                
+                const token = await generateToken(kv, 'confhome', {
+                    url: SCRIPT_URLS.confhome,
+                    vpsIp: vpsIp
+                });
+                
+                // Use obfuscated path if request came from obfuscated endpoint
+                const confhomePath = path === '/x/gc' ? '/c/' : '/api/confhome/';
+                const confhomeUrl = `${url.origin}${confhomePath}${token}`;
+                
+                console.log(`[CONFHOME] Generated token for VPS IP: ${vpsIp}`);
+                
+                return new Response(JSON.stringify({
+                    success: true,
+                    token,
+                    confhome: confhomeUrl
+                }), {
+                    headers: {
+                        'Content-Type': 'application/json',
+                        ...corsHeaders
+                    }
+                });
+            }
+            
+            // Get confhome dengan token (one-time use, IP-restricted)
+            // Support both original path and obfuscated path
+            // Format: /c/TOKEN or /c/TOKEN/filename or /api/confhome/TOKEN or /api/confhome/TOKEN/filename
+            const isConfhomeRequest = path.startsWith('/api/confhome/') || path.startsWith('/c/');
+            if (isConfhomeRequest && method === 'GET') {
+                // Extract token (first part after /c/ or /api/confhome/)
+                let token = '';
+                if (path.startsWith('/c/')) {
+                    const afterPrefix = path.split('/c/')[1];
+                    token = afterPrefix.split('/')[0]; // First part is token
+                } else if (path.startsWith('/api/confhome/')) {
+                    const afterPrefix = path.split('/api/confhome/')[1];
+                    token = afterPrefix.split('/')[0]; // First part is token
+                }
+                
+                if (!token) {
+                    return new Response(JSON.stringify({ error: 'Token required' }), {
+                        status: 400,
+                        headers: {
+                            'Content-Type': 'application/json',
+                            ...corsHeaders
+                        }
+                    });
+                }
+                
+                // Check if KV is available
+                if (!kv) {
+                    console.error('[CONFHOME] KV namespace TOKEN_STORAGE not bound');
+                    return new Response(JSON.stringify({ 
+                        error: 'Backend configuration error: KV namespace not bound' 
+                    }), {
+                        status: 500,
+                        headers: {
+                            'Content-Type': 'application/json',
+                            ...corsHeaders
+                        }
+                    });
+                }
+                
+                // Get client IP for IP binding validation
+                const clientIp = request.headers.get('CF-Connecting-IP') || 
+                                request.headers.get('X-Forwarded-For')?.split(',')[0]?.trim() || 
+                                'unknown';
+                
+                const validation = await validateToken(kv, token, 'confhome', clientIp);
+                
+                if (!validation.valid) {
+                    console.error(`[CONFHOME] Token validation failed: ${validation.error}`);
+                    return new Response(JSON.stringify({ error: validation.error }), {
+                        status: 403,
+                        headers: {
+                            'Content-Type': 'application/json',
+                            ...corsHeaders
+                        }
+                    });
+                }
+                
+                // IP validation: ONLY VPS target IP can access (clientIp already defined above)
+                const vpsIp = validation.data.vpsIp;
+                
+                console.log(`[CONFHOME] Access request with token: ${token.substring(0, 8)}...`);
+                console.log(`  Client IP: ${clientIp}`);
+                console.log(`  VPS IP (target): ${vpsIp}`);
+                
+                if (vpsIp && clientIp !== vpsIp) {
+                    console.error(`[CONFHOME] Access denied: IP=${clientIp} (expected VPS IP: ${vpsIp})`);
+                    return new Response(JSON.stringify({ 
+                        error: 'Forbidden',
+                        message: `IP address ${clientIp} is not authorized. Only VPS target IP ${vpsIp} can access.`
+                    }), {
+                        status: 403,
+                        headers: {
+                            'Content-Type': 'application/json',
+                            ...corsHeaders
+                        }
+                    });
+                }
+                
+                // Extract filename from path (e.g., /c/token/fix-eth-name.sh -> fix-eth-name.sh)
+                // Token format: /c/TOKEN or /c/TOKEN/filename
+                let pathAfterToken = '';
+                if (path.startsWith('/c/')) {
+                    const parts = path.split('/c/')[1].split('/');
+                    if (parts.length > 1) {
+                        // Skip token (first part), take rest as file path
+                        pathAfterToken = parts.slice(1).join('/');
+                    }
+                } else if (path.startsWith('/api/confhome/')) {
+                    const parts = path.split('/api/confhome/')[1].split('/');
+                    if (parts.length > 1) {
+                        // Skip token (first part), take rest as file path
+                        pathAfterToken = parts.slice(1).join('/');
+                    }
+                }
+                
+                // Build URL: confhome base URL + filename
+                const confhomeBaseUrl = validation.data.url;
+                // Ensure confhomeBaseUrl ends without slash, then add pathAfterToken
+                const baseUrlClean = confhomeBaseUrl.replace(/\/+$/, '');
+                const fileUrl = pathAfterToken 
+                    ? `${baseUrlClean}/${pathAfterToken}`.replace(/\/+/g, '/')
+                    : baseUrlClean;
+                
+                console.log(`[CONFHOME] Proxying request to: ${fileUrl.replace(/https?:\/\/([^\/]+).*/, '$1/***')}`);
+                
+                // PROXY MODE: Fetch dan stream file content langsung (tidak redirect)
+                try {
+                    const fileResponse = await fetch(fileUrl, {
+                        method: 'GET',
+                        redirect: 'follow',
+                        headers: {
+                            'User-Agent': 'Mozilla/5.0 (compatible; RDP-Installer/1.0)',
+                            'Accept': '*/*',
+                            'Referer': ''
+                        }
+                    });
+                    
+                    if (!fileResponse.ok) {
+                        console.error(`[CONFHOME] Failed to fetch file: ${fileResponse.status} ${fileResponse.statusText}`);
+                        return new Response(`Failed to fetch file: ${fileResponse.status}`, {
+                            status: fileResponse.status,
+                            headers: {
+                                'Content-Type': 'text/plain; charset=utf-8',
+                                ...corsHeaders
+                            }
+                        });
+                    }
+                    
+                    // Stream file content langsung ke client
+                    const contentType = fileResponse.headers.get('Content-Type') || 'application/octet-stream';
+                    
+                    return new Response(fileResponse.body, {
+                        status: 200,
+                        headers: {
+                            'Content-Type': contentType,
+                            'Cache-Control': 'no-store, no-cache, must-revalidate, private',
+                            'Pragma': 'no-cache',
+                            'Expires': '0',
+                            ...corsHeaders
+                        }
+                    });
+                } catch (fetchError) {
+                    console.error(`[CONFHOME] Error fetching file: ${fetchError.message}`);
+                    return new Response(`Error fetching file: ${fetchError.message}`, {
+                        status: 500,
+                        headers: {
+                            'Content-Type': 'text/plain; charset=utf-8',
+                            ...corsHeaders
+                        }
+                    });
+                }
+            }
+            
+            // Installation status API: POST /api/installation-status/:installId
+            // Untuk tracking status instalasi dari trans.sh sebelum reboot
+            if (path.startsWith('/api/installation-status/') && method === 'POST') {
+                const installId = path.split('/api/installation-status/')[1];
+                if (!installId) {
+                    return new Response(JSON.stringify({ error: 'Install ID required' }), {
+                        status: 400,
+                        headers: {
+                            'Content-Type': 'application/json',
+                            ...corsHeaders
+                        }
+                    });
+                }
+                
+                // Parse request body
+                let statusData;
+                try {
+                    statusData = await request.json();
+                } catch (e) {
+                    statusData = {};
+                }
+                
+                const status = statusData.status || 'completed'; // 'completed', 'failed', 'in_progress'
+                const message = statusData.message || '';
+                
+                // Check if KV is available
+                if (!kv) {
+                    console.error('[INSTALLATION STATUS] KV namespace TOKEN_STORAGE not bound');
+                    return new Response(JSON.stringify({ 
+                        error: 'Backend configuration error: KV namespace not bound' 
+                    }), {
+                        status: 500,
+                        headers: {
+                            'Content-Type': 'application/json',
+                            ...corsHeaders
+                        }
+                    });
+                }
+                
+                // Store installation status in KV
+                // Key: installation:${installId}
+                // Data: { status, message, timestamp, updatedAt }
+                const statusKey = `installation:${installId}`;
+                const statusInfo = {
+                    installId,
+                    status,
+                    message,
+                    timestamp: Date.now(),
+                    updatedAt: Date.now()
+                };
+                
+                // Store with 1 hour TTL (installation should complete within 1 hour)
+                await kv.put(statusKey, JSON.stringify(statusInfo), {
+                    expirationTtl: 3600 // 1 hour
+                });
+                
+                console.info(`[INSTALLATION STATUS] Updated status for ${installId}: ${status}${message ? ` - ${message}` : ''}`);
+                
+                return new Response(JSON.stringify({
+                    success: true,
+                    installId,
+                    status,
+                    message: 'Status updated successfully'
+                }), {
+                    headers: {
+                        'Content-Type': 'application/json',
+                        ...corsHeaders
+                    }
+                });
+            }
+            
+            // Get installation status: GET /api/installation-status/:installId
+            // Untuk polling status dari dedicatedRdpHandler.js
+            if (path.startsWith('/api/installation-status/') && method === 'GET') {
+                const installId = path.split('/api/installation-status/')[1];
+                if (!installId) {
+                    return new Response(JSON.stringify({ error: 'Install ID required' }), {
+                        status: 400,
+                        headers: {
+                            'Content-Type': 'application/json',
+                            ...corsHeaders
+                        }
+                    });
+                }
+                
+                // Check if KV is available
+                if (!kv) {
+                    console.error('[INSTALLATION STATUS] KV namespace TOKEN_STORAGE not bound');
+                    return new Response(JSON.stringify({ 
+                        error: 'Backend configuration error: KV namespace not bound' 
+                    }), {
+                        status: 500,
+                        headers: {
+                            'Content-Type': 'application/json',
+                            ...corsHeaders
+                        }
+                    });
+                }
+                
+                // Get installation status from KV
+                const statusKey = `installation:${installId}`;
+                const statusDataStr = await kv.get(statusKey);
+                
+                if (!statusDataStr) {
+                    // Status not found (belum ada status atau sudah expired)
+                    return new Response(JSON.stringify({
+                        success: true,
+                        installId,
+                        status: 'not_found',
+                        message: 'Installation status not found or expired'
+                    }), {
+                        headers: {
+                            'Content-Type': 'application/json',
+                            ...corsHeaders
+                        }
+                    });
+                }
+                
+                const statusData = JSON.parse(statusDataStr);
+                
+                return new Response(JSON.stringify({
+                    success: true,
+                    installId,
+                    status: statusData.status,
+                    message: statusData.message || '',
+                    timestamp: statusData.timestamp,
+                    updatedAt: statusData.updatedAt
+                }), {
+                    headers: {
+                        'Content-Type': 'application/json',
+                        ...corsHeaders
+                    }
+                });
+            }
+            
+            // 404
+            return new Response(JSON.stringify({ error: 'Not found' }), {
+                status: 404,
+                headers: {
+                    'Content-Type': 'application/json',
+                    ...corsHeaders
+                }
+            });
+            
+        } catch (error) {
+            console.error('Error:', error);
+            return new Response(JSON.stringify({ 
+                error: 'Internal server error',
+                message: error.message 
+            }), {
+                status: 500,
+                headers: {
+                    'Content-Type': 'application/json',
+                    ...corsHeaders
+                }
+            });
+        }
+    }
+};
+

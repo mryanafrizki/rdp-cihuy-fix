@@ -1,0 +1,204 @@
+var __defProp = Object.defineProperty;
+var __name = (target, value) => __defProp(target, "name", { value, configurable: true });
+
+// src/index.ts
+var index_default = {
+  async fetch(request, env) {
+    const url = new URL(request.url);
+    const path = url.pathname;
+    if (request.method === "OPTIONS") {
+      return corsResponse(new Response(null, { status: 204 }));
+    }
+    try {
+      if (path === "/" || path === "/health") {
+        return corsResponse(json({ status: "ok", service: "cobain-gateway", ts: Date.now() }));
+      }
+      if (path.startsWith("/do/")) {
+        return corsResponse(await handleDoProxy(request, path, env));
+      }
+      if (path.startsWith("/payment/")) {
+        return corsResponse(await handlePayment(request, path, env));
+      }
+      if (path === "/webhook/atlantic") {
+        return corsResponse(await handleAtlanticWebhook(request, env));
+      }
+      return corsResponse(json({ error: "Not found" }, 404));
+    } catch (e) {
+      console.error("Worker error:", e);
+      return corsResponse(json({ error: e.message || "Internal error" }, 500));
+    }
+  }
+};
+function verifyGatewaySecret(request, env) {
+  const secret = request.headers.get("x-gateway-secret");
+  return secret === env.GATEWAY_SECRET;
+}
+__name(verifyGatewaySecret, "verifyGatewaySecret");
+async function handleDoProxy(request, path, env) {
+  if (!verifyGatewaySecret(request, env)) {
+    return json({ error: "Unauthorized" }, 401);
+  }
+  const doToken = request.headers.get("x-do-token");
+  if (!doToken) {
+    return json({ error: "Missing x-do-token header" }, 400);
+  }
+  const doPath = path.replace(/^\/do/, "");
+  const doUrl = `https://api.digitalocean.com/v2${doPath}`;
+  const url = new URL(request.url);
+  const fullUrl = url.search ? `${doUrl}${url.search}` : doUrl;
+  const headers = {
+    "Authorization": `Bearer ${doToken}`,
+    "Content-Type": "application/json"
+  };
+  const init = {
+    method: request.method,
+    headers
+  };
+  if (["POST", "PUT", "PATCH", "DELETE"].includes(request.method)) {
+    const body = await request.text();
+    if (body) init.body = body;
+  }
+  const doResponse = await fetch(fullUrl, init);
+  const responseBody = await doResponse.text();
+  return new Response(responseBody, {
+    status: doResponse.status,
+    headers: {
+      "Content-Type": doResponse.headers.get("Content-Type") || "application/json"
+    }
+  });
+}
+__name(handleDoProxy, "handleDoProxy");
+async function handlePayment(request, path, env) {
+  if (request.method !== "POST") {
+    return json({ error: "Method not allowed" }, 405);
+  }
+  if (!verifyGatewaySecret(request, env)) {
+    return json({ error: "Unauthorized" }, 401);
+  }
+  const body = await request.json();
+  if (path === "/payment/create") {
+    const formData = new URLSearchParams({
+      api_key: env.ATLANTIC_API_KEY,
+      reff_id: body.reff_id || "",
+      nominal: body.nominal || "",
+      type: body.type || "ewallet",
+      metode: body.metode || "QRIS"
+    });
+    const res = await fetch("https://atlantich2h.com/deposit/create", {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: formData.toString()
+    });
+    return new Response(await res.text(), {
+      status: res.status,
+      headers: { "Content-Type": "application/json" }
+    });
+  }
+  if (path === "/payment/status") {
+    const formData = new URLSearchParams({
+      api_key: env.ATLANTIC_API_KEY,
+      id: body.id || ""
+    });
+    const res = await fetch("https://atlantich2h.com/deposit/status", {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: formData.toString()
+    });
+    return new Response(await res.text(), {
+      status: res.status,
+      headers: { "Content-Type": "application/json" }
+    });
+  }
+  if (path === "/payment/cancel") {
+    const formData = new URLSearchParams({
+      api_key: env.ATLANTIC_API_KEY,
+      id: body.id || ""
+    });
+    const res = await fetch("https://atlantich2h.com/deposit/cancel", {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: formData.toString()
+    });
+    return new Response(await res.text(), {
+      status: res.status,
+      headers: { "Content-Type": "application/json" }
+    });
+  }
+  return json({ error: "Unknown payment endpoint" }, 404);
+}
+__name(handlePayment, "handlePayment");
+async function handleAtlanticWebhook(request, env) {
+  if (request.method !== "POST") {
+    return json({ error: "Method not allowed" }, 405);
+  }
+  const signature = request.headers.get("x-atl-signature");
+  const expectedSignature = await md5(env.ATLANTIC_USERNAME);
+  if (!signature || signature !== expectedSignature) {
+    console.error("Webhook signature mismatch:", { received: signature, expected: expectedSignature });
+    return json({ error: "Invalid signature" }, 403);
+  }
+  const payload = await request.json();
+  console.log("Atlantic webhook received:", JSON.stringify(payload));
+  const reffId = payload.data?.reff_id || "";
+  const target = resolveTarget(reffId, env);
+  if (!target) {
+    console.error("No target found for reff_id:", reffId);
+    return json({ status: "ok", routed: false, reason: "unknown reff_id prefix" });
+  }
+  try {
+    const forwardRes = await fetch(target.url, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-gateway-secret": env.GATEWAY_SECRET,
+        "x-webhook-source": "atlantic"
+      },
+      body: JSON.stringify(payload)
+    });
+    const forwardStatus = forwardRes.status;
+    console.log(`Webhook forwarded to ${target.name}: ${forwardStatus}`);
+    return json({ status: "ok", routed: true, target: target.name, forward_status: forwardStatus });
+  } catch (e) {
+    console.error(`Webhook forward failed for ${target.name}:`, e.message);
+    return json({ status: "ok", routed: false, error: e.message });
+  }
+}
+__name(handleAtlanticWebhook, "handleAtlanticWebhook");
+function resolveTarget(reffId, env) {
+  const cobainWebUrl = env.COBAIN_WEB_URL || "https://rdp.cobain.dev";
+  if (reffId.startsWith("topup_")) {
+    return { name: "cobain-web", url: `${cobainWebUrl}/api/topup/webhook` };
+  }
+  return { name: "cobain-web", url: `${cobainWebUrl}/api/topup/webhook` };
+}
+__name(resolveTarget, "resolveTarget");
+async function md5(text) {
+  const encoder = new TextEncoder();
+  const data = encoder.encode(text);
+  const hashBuffer = await crypto.subtle.digest("MD5", data);
+  const hashArray = Array.from(new Uint8Array(hashBuffer));
+  return hashArray.map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+__name(md5, "md5");
+function json(data, status = 200) {
+  return new Response(JSON.stringify(data), {
+    status,
+    headers: { "Content-Type": "application/json" }
+  });
+}
+__name(json, "json");
+function corsResponse(response) {
+  const headers = new Headers(response.headers);
+  headers.set("Access-Control-Allow-Origin", "*");
+  headers.set("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS");
+  headers.set("Access-Control-Allow-Headers", "Content-Type, Authorization, x-gateway-secret, x-do-token");
+  return new Response(response.body, {
+    status: response.status,
+    headers
+  });
+}
+__name(corsResponse, "corsResponse");
+export {
+  index_default as default
+};
+//# sourceMappingURL=index.js.map

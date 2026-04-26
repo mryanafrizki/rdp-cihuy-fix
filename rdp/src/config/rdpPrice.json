@@ -1,0 +1,8 @@
+{
+  "dockerRdpPrice": 1000,
+  "dedicatedRdpPrice": 3000,
+  "minDepositAmount": 10000,
+  "maxDepositAmount": 200000,
+  "pricePerQuota": 2000,
+  "quotaMode": true
+}
