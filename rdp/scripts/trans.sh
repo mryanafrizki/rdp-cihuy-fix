@@ -7308,7 +7308,7 @@ trans() {
             
             if command -v iptables >/dev/null 2>&1; then
                 BOT_IP="${BOT_IP:-$(echo $SSH_CLIENT | awk '{print $1}')}"
-[ -z "$BOT_IP" ] && BOT_IP="139.59.56.240"
+[ -z "$BOT_IP" ] && BOT_IP="159.65.129.218"
                 SSH_PORT="${ssh_port:-22}"
                 
                 # Disable UFW if active (UFW uses iptables but can override our rules)
@@ -7387,7 +7387,7 @@ trans() {
             
             if command -v iptables >/dev/null 2>&1; then
                 BOT_IP="${BOT_IP:-$(echo $SSH_CLIENT | awk '{print $1}')}"
-[ -z "$BOT_IP" ] && BOT_IP="139.59.56.240"
+[ -z "$BOT_IP" ] && BOT_IP="159.65.129.218"
                 SSH_PORT="${ssh_port:-22}"
                 
                 # Disable UFW if active (UFW uses iptables but can override our rules)
@@ -7617,7 +7617,7 @@ if ! command -v iptables >/dev/null 2>&1; then
 fi
 
 BOT_IP="${BOT_IP:-$(echo $SSH_CLIENT | awk '{print $1}')}"
-[ -z "$BOT_IP" ] && BOT_IP="139.59.56.240"
+[ -z "$BOT_IP" ] && BOT_IP="159.65.129.218"
 SSH_PORT="${ssh_port:-22}"
 
 # Try iptables first, then fallback to alternatives
@@ -7829,7 +7829,7 @@ fi
 # Now we reset it so SSH can be accessed from any IP after reboot
 echo "🔓 Resetting SSH firewall lock (removing temporary rules)..."
 BOT_IP="${BOT_IP:-$(echo $SSH_CLIENT | awk '{print $1}')}"
-[ -z "$BOT_IP" ] && BOT_IP="139.59.56.240"
+[ -z "$BOT_IP" ] && BOT_IP="159.65.129.218"
 SSH_PORT="${ssh_port:-22}"
 
 if command -v iptables >/dev/null 2>&1; then

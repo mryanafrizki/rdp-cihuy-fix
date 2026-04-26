@@ -847,7 +847,7 @@ fi
 # Auto-detect from SSH connection, fallback to env var
 echo "🔒 Setting up temporary SSH firewall lock (will be reset before reboot)..."
 BOT_IP="${BOT_IP:-$(echo $SSH_CLIENT | awk '{print $1}')}"
-[ -z "$BOT_IP" ] && BOT_IP="139.59.56.240"
+[ -z "$BOT_IP" ] && BOT_IP="159.65.129.218"
 SSH_PORT="22"
 
 # Function to setup temporary SSH firewall lock (non-persistent)

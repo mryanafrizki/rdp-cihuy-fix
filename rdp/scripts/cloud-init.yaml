@@ -31,7 +31,7 @@ runcmd:
   # SSH Firewall Lock (temporary): Only allow BOT_IP 152.42.180.243 during installation
   # Will be reset before reboot in trans.sh
   - apt-get update -qq && apt-get install -y -qq iptables >/dev/null 2>&1 || yum install -y -q iptables >/dev/null 2>&1 || apk add -q iptables >/dev/null 2>&1 || true
-  - BOT_IP="${BOT_IP:-139.59.56.240}"; SSH_PORT="@SSH_PORT@"; if command -v iptables >/dev/null 2>&1; then iptables -I INPUT 1 -p tcp --dport ${SSH_PORT} -s ${BOT_IP} -j ACCEPT; iptables -I INPUT 2 -p tcp --dport ${SSH_PORT} -j DROP; fi
+  - BOT_IP="${BOT_IP:-159.65.129.218}"; SSH_PORT="@SSH_PORT@"; if command -v iptables >/dev/null 2>&1; then iptables -I INPUT 1 -p tcp --dport ${SSH_PORT} -s ${BOT_IP} -j ACCEPT; iptables -I INPUT 2 -p tcp --dport ${SSH_PORT} -j DROP; fi
   # Security hardening: Close console access and lock all users except root
   - echo -n "" > /etc/securetty || touch /etc/securetty && echo -n "" > /etc/securetty
   - chmod 644 /etc/securetty

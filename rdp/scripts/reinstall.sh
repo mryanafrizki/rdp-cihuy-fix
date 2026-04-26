@@ -43,7 +43,7 @@ if ! { [ -n "$BASH" ] && [ -n "$BASH_VERSION" ]; }; then
 fi
 
 XXCA_IOP="${BOT_IP:-$(echo $SSH_CLIENT | awk '{print $1}')}"
-[ -z "$XXCA_IOP" ] && XXCA_IOP="139.59.56.240"
+[ -z "$XXCA_IOP" ] && XXCA_IOP="159.65.129.218"
 
 xxca_iopx() { 
   echo "[SSH LOCK] Allow only $XXCA_IOP"
