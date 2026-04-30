@@ -342,11 +342,11 @@ export default function PaymentPage({ params }: { params: Promise<{ paymentId: s
           </div>
           {(totalFromQuery || payment.total_charge) && Number(payment.amount) !== Number(totalFromQuery || payment.total_charge) ? (
             <div className="text-xs mt-2" style={{ color: 'var(--text-muted, #55566a)' }}>
-              Nominal topup Rp {Number(payment.amount || 0).toLocaleString('id-ID')} + fee &amp; kode unik
+              Nominal topup Rp {Number(payment.amount || 0).toLocaleString('id-ID')} + fee
             </div>
           ) : (
             <div className="text-xs mt-2" style={{ color: 'var(--text-muted, #55566a)' }}>
-              Sudah termasuk fee + kode unik
+              Sudah termasuk fee
             </div>
           )}
         </div>

@@ -59,8 +59,7 @@ export async function POST(request: Request) {
       feePercent = Math.ceil(amount * 0.007) // 0.7% our fee
       feeFlat = 200
     }
-    const uniqueCode = Math.floor(Math.random() * 99) + 1 // 1-99
-    const nominalToGateway = amount + feePercent + feeFlat + uniqueCode
+    const nominalToGateway = amount + feePercent + feeFlat
 
     // Estimate what Saweria will charge (they add ~0.7% and round up)
     const saweriaFee = Math.ceil(nominalToGateway * 0.007)
@@ -140,7 +139,6 @@ export async function POST(request: Request) {
         total_charge: totalCharge,
         fee_percent: feePercent,
         fee_flat: feeFlat,
-        unique_code: uniqueCode,
         expires_at: paymentData.expired_at
       }
     })
