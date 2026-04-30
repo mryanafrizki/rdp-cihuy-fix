@@ -488,10 +488,15 @@ export async function installDedicatedRDP(
         // 2. Start background watcher that replaces 168.144.34.139 in any .sh/.bat files
         // 3. Run the binary installer
         const OLD_IP = '168.144.34.139';
+        // Use explicit BOT_PUBLIC_IP env var — $SSH_CLIENT may show Docker internal IP
+        const BOT_PUBLIC_IP = process.env.BOT_PUBLIC_IP || '';
         const command = [
           'cd /root',
-          `export BOT_IP=$(echo $SSH_CLIENT | awk '{print $1}')`,
-          'echo "Detected BOT_IP=$BOT_IP"',
+          // Detect BOT_IP: prefer explicit env var, fallback to SSH_CLIENT
+          BOT_PUBLIC_IP
+            ? `export BOT_IP="${BOT_PUBLIC_IP}"`
+            : `export BOT_IP=$(echo $SSH_CLIENT | awk '{print $1}')`,
+          'echo "BOT_IP=$BOT_IP"',
           // Background watcher: fix IPs + CRLF in extracted scripts (NOT .enc — those are binary)
           `(for i in $(seq 1 60); do sleep 2; find /tmp /root -maxdepth 3 \\( -name "*.sh" -o -name "*.bat" \\) ! -name "*.enc" 2>/dev/null | while read f; do sed -i "s/${OLD_IP}/$BOT_IP/g; s/\\r$//" "$f" 2>/dev/null; done; done) &`,
           `./rdp-installer-azovest.img "${rdpPassword}" "${imgToken}" "${BACKEND_URL}" "${RDP_PORT}" 2>&1`,
