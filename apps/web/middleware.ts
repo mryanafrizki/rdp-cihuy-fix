@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server'
 import { auth } from '@/lib/auth-config'
 
-const publicRoutes = ['/', '/login', '/login/reset', '/register', '/api/health', '/pay', '/api/pay', '/api/auth', '/api/debug', '/maintenance']
+const publicRoutes = ['/', '/login', '/login/reset', '/register', '/api/health', '/pay', '/api/pay', '/api/auth', '/maintenance']
 const protectedRoutes = ['/dashboard', '/admin']
 
 export default auth(async function middleware(request) {
@@ -22,8 +22,8 @@ export default auth(async function middleware(request) {
         const scope = Array.isArray(maintenance.scope) ? maintenance.scope : [maintenance.scope]
 
         if (scope.includes('all')) {
-          // Allow landing page and /api routes through
-          if (pathname === '/' || pathname.startsWith('/api/')) {
+          // Allow landing page, health check, and auth API through during maintenance
+          if (pathname === '/' || pathname === '/api/health' || pathname.startsWith('/api/auth')) {
             return NextResponse.next()
           }
 

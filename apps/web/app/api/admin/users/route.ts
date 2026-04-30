@@ -99,7 +99,7 @@ export async function GET(request: Request) {
     })
   } catch (error: any) {
     notifyError('/api/admin/users', error.message || String(error))
-    return NextResponse.json({ error: error.message }, { status: 500 })
+    return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
   }
 }
 
@@ -138,6 +138,6 @@ export async function PUT(request: NextRequest) {
     return NextResponse.json({ success: true })
   } catch (error: any) {
     notifyError('/api/admin/users', error.message || String(error))
-    return NextResponse.json({ error: error.message }, { status: 500 })
+    return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
   }
 }

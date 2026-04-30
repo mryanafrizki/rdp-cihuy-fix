@@ -67,7 +67,7 @@ export async function POST(request: Request) {
     // Telegram notification (fire-and-forget)
     notifyPasswordReset(user?.email || 'unknown')
 
-    return NextResponse.json({ success: true, userId: resetToken.userId, email: user?.email || '' })
+    return NextResponse.json({ success: true })
   } catch (error) {
     console.error('Reset confirm error:', error)
     return NextResponse.json({ success: false, error: 'Failed to reset password' }, { status: 500 })

@@ -114,41 +114,7 @@ export async function POST(request: NextRequest) {
     }
   }
 
-  // Apply free credit for new users
-  if (newUser) {
-    try {
-      const [fcSettings] = await db
-        .select({ value: schema.appSettings.value })
-        .from(schema.appSettings)
-        .where(eq(schema.appSettings.key, 'free_credit'))
-        .limit(1)
-
-      const freeCredit = fcSettings?.value as { enabled?: boolean; amount?: number } | null
-
-      if (freeCredit && typeof freeCredit === 'object' && freeCredit.enabled && freeCredit.amount && freeCredit.amount > 0) {
-        // Add free credit: update user balance
-        await db
-          .update(schema.users)
-          .set({
-            creditBalance: String(freeCredit.amount),
-          })
-          .where(eq(schema.users.id, newUser.id))
-
-        // Create a transaction record
-        await db.insert(schema.transactions).values({
-          userId: newUser.id,
-          amount: String(freeCredit.amount),
-          type: 'topup',
-          status: 'completed',
-          paymentId: 'welcome_bonus',
-        })
-      }
-    } catch (e) {
-      // Non-fatal - don't block registration
-      console.error('Free credit error:', e)
-      notifyError('/api/auth/register', 'Free credit error: ' + String(e))
-    }
-  }
+  // Free credit is granted after email confirmation (see confirm-email/route.ts)
 
   // Log successful registration (fire-and-forget)
   logActivity({

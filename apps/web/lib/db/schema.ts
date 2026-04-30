@@ -337,3 +337,27 @@ export const userSessions = pgTable(
 
 export type UserSession = InferSelectModel<typeof userSessions>
 export type NewUserSession = InferInsertModel<typeof userSessions>
+
+// ─── free_credit_tracking ────────────────────────────────────────────────────
+export const freeCreditTracking = pgTable(
+  'free_credit_tracking',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' })
+      .unique(),
+    amount: numeric('amount').notNull(),
+    grantedAt: timestamp('granted_at', { withTimezone: true }).defaultNow(),
+    expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+    expired: boolean('expired').default(false).notNull(),
+    expiredAmount: numeric('expired_amount').default('0'),
+  },
+  (t) => [
+    index('idx_fct_user').on(t.userId),
+    index('idx_fct_expires').on(t.expiresAt),
+  ],
+)
+
+export type FreeCreditTracking = InferSelectModel<typeof freeCreditTracking>
+export type NewFreeCreditTracking = InferInsertModel<typeof freeCreditTracking>

@@ -41,8 +41,10 @@ export async function doFetch(
   const data = await response.json()
 
   if (response.status >= 400) {
-    const msg = (data as Record<string, string>)?.message || `DO API error: ${response.status}`
-    throw new Error(msg)
+    const msg = (data as Record<string, string>)?.message || `Error ${response.status}`
+    const err = new Error(msg)
+    err.name = 'DOApiError'
+    throw err
   }
 
   return data

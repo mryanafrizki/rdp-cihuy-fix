@@ -67,7 +67,6 @@ export async function GET(request: Request) {
         status: schema.installations.status,
         progressStep: schema.installations.progressStep,
         progressMessage: schema.installations.progressMessage,
-        rdpPassword: schema.installations.rdpPassword,
         createdAt: schema.installations.createdAt,
         updatedAt: schema.installations.updatedAt,
         completedAt: schema.installations.completedAt,
@@ -94,6 +93,6 @@ export async function GET(request: Request) {
     })
   } catch (error: any) {
     notifyError('/api/admin/installations', error.message || String(error))
-    return NextResponse.json({ error: error.message }, { status: 500 })
+    return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
   }
 }

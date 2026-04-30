@@ -33,7 +33,7 @@ export async function GET() {
     return NextResponse.json({ success: true, data: { ...data, credit_balance: Number(data.credit_balance) || 0 } })
   } catch (error: any) {
     notifyError('/api/profile', error.message)
-    return NextResponse.json({ success: false, error: error.message }, { status: 500 })
+    return NextResponse.json({ success: false, error: 'Internal server error' }, { status: 500 })
   }
 }
 
@@ -51,22 +51,15 @@ export async function PUT(request: Request) {
     return NextResponse.json({ success: false, error: 'Invalid JSON' }, { status: 400 })
   }
   
-  // Only allow updating email - exclude role and credit_balance
-  const { email } = body
-  const updates: { email?: string } = {}
-  
-  if (email !== undefined) {
-    updates.email = email
-  }
-  
-  if (Object.keys(updates).length === 0) {
-    return NextResponse.json({ success: false, error: 'No valid fields to update' }, { status: 400 })
-  }
-  
+  // Email changes are not allowed via profile update (requires re-verification)
+  // Only non-sensitive fields can be updated here
+  return NextResponse.json({ success: false, error: 'No valid fields to update' }, { status: 400 })
+
+  // Kept for future use if needed with re-verification flow
   try {
     const [data] = await db
       .update(schema.users)
-      .set(updates)
+      .set({})
       .where(eq(schema.users.id, session.user.id))
       .returning({
         id: schema.users.id,
@@ -92,6 +85,6 @@ export async function PUT(request: Request) {
     return NextResponse.json({ success: true, data })
   } catch (error: any) {
     notifyError('/api/profile', error.message)
-    return NextResponse.json({ success: false, error: error.message }, { status: 500 })
+    return NextResponse.json({ success: false, error: 'Internal server error' }, { status: 500 })
   }
 }

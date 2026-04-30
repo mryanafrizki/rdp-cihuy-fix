@@ -25,6 +25,9 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
 
         if (!user) return null
 
+        // Block unconfirmed email — no login without confirmation
+        if (!user.emailConfirmed) return null
+
         const valid = await verifyPassword(password, user.passwordHash)
         if (!valid) return null
 

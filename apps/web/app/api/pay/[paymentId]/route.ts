@@ -32,9 +32,8 @@ export async function GET(
       .where(eq(schema.paymentTracking.transactionId, paymentId))
       .limit(1)
 
-    let currentStatus = transaction.status
-
-    // If pending, check status through gateway worker
+    // Read-only status check — DB updates are handled by webhook and /api/topup/status
+    let gatewayStatus = 'pending'
     if (transaction.status === 'pending' && tracking?.gatewayPaymentId) {
       const gatewayUrl = process.env.GATEWAY_URL
       const gatewaySecret = process.env.GATEWAY_SECRET
@@ -49,33 +48,14 @@ export async function GET(
             body: JSON.stringify({ id: tracking.gatewayPaymentId }),
           })
           const statusData = await statusRes.json()
-          const paymentStatus = (statusData.data?.status || '').toLowerCase()
-
-          if (['success', 'processing', 'settlement', 'capture', 'paid', 'completed'].includes(paymentStatus)) {
-            await db
-              .update(schema.transactions)
-              .set({ status: 'completed', updatedAt: new Date() })
-              .where(and(eq(schema.transactions.id, paymentId), eq(schema.transactions.status, 'pending')))
-            currentStatus = 'completed'
-          } else if (paymentStatus === 'expired') {
-            await db
-              .update(schema.transactions)
-              .set({ status: 'expired', updatedAt: new Date() })
-              .where(and(eq(schema.transactions.id, paymentId), eq(schema.transactions.status, 'pending')))
-            currentStatus = 'expired'
-          } else if (['cancel', 'cancelled', 'failed'].includes(paymentStatus)) {
-            const mapped = paymentStatus === 'failed' ? 'failed' : 'cancelled'
-            await db
-              .update(schema.transactions)
-              .set({ status: mapped, updatedAt: new Date() })
-              .where(and(eq(schema.transactions.id, paymentId), eq(schema.transactions.status, 'pending')))
-            currentStatus = mapped
-          }
+          gatewayStatus = (statusData.data?.status || 'pending').toLowerCase()
         } catch {
           /* ignore status check errors */
         }
       }
     }
+
+    const currentStatus = transaction.status === 'pending' ? gatewayStatus : transaction.status
 
     return NextResponse.json({
       success: true,

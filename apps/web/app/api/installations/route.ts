@@ -125,6 +125,6 @@ export async function GET(request: Request) {
     })
   } catch (error: any) {
     notifyError('/api/installations', error.message)
-    return NextResponse.json({ success: false, error: error.message }, { status: 500 })
+    return NextResponse.json({ success: false, error: 'Internal server error' }, { status: 500 })
   }
 }

@@ -32,7 +32,7 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ success: true, data: data.droplets || [] })
   } catch (e: any) {
     notifyError('/api/cloud/droplets', e.message || String(e))
-    return NextResponse.json({ error: e.message }, { status: 500 })
+    return NextResponse.json({ error: e.name === 'DOApiError' ? e.message : 'Cloud service error' }, { status: 500 })
   }
 }
 
@@ -156,7 +156,7 @@ export async function POST(request: NextRequest) {
     // Refund if balance was deducted but VPS creation failed
     if (balanceDeducted) await addBalance(session.user.id, installPrice)
     notifyError('/api/cloud/droplets', e.message || String(e))
-    return NextResponse.json({ error: e.message }, { status: 500 })
+    return NextResponse.json({ error: e.name === 'DOApiError' ? e.message : 'Cloud service error' }, { status: 500 })
   }
 }
 
@@ -189,7 +189,7 @@ export async function PUT(request: NextRequest) {
     return NextResponse.json({ success: true, data: data.action })
   } catch (e: any) {
     notifyError('/api/cloud/droplets', e.message || String(e))
-    return NextResponse.json({ error: e.message }, { status: 500 })
+    return NextResponse.json({ error: e.name === 'DOApiError' ? e.message : 'Cloud service error' }, { status: 500 })
   }
 }
 
@@ -220,6 +220,6 @@ export async function DELETE(request: NextRequest) {
     return NextResponse.json({ success: true })
   } catch (e: any) {
     notifyError('/api/cloud/droplets', e.message || String(e))
-    return NextResponse.json({ error: e.message }, { status: 500 })
+    return NextResponse.json({ error: e.name === 'DOApiError' ? e.message : 'Cloud service error' }, { status: 500 })
   }
 }

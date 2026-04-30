@@ -52,7 +52,7 @@ export async function POST(request: Request) {
           type: 'topup',
           amount: String(amount),
           status: 'completed',
-          paymentId: 'admin_topup',
+          paymentId: `admin_topup_${Date.now()}_${user_id.slice(0, 8)}`,
         })
 
         // Log admin topup (fire-and-forget)
@@ -164,6 +164,6 @@ export async function POST(request: Request) {
     }
   } catch (error: any) {
     notifyError('/api/admin/actions', error.message || String(error))
-    return NextResponse.json({ error: error.message }, { status: 500 })
+    return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
   }
 }

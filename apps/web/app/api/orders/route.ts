@@ -24,9 +24,12 @@ const VALID_OS_VERSIONS = [
 ];
 
 function isValidIP(ip: string): boolean {
+  // Only allow standard dotted-decimal IPv4 — reject IPv6, decimal, octal, hex
   const ipRegex = /^(\d{1,3}\.){3}\d{1,3}$/;
   if (!ipRegex.test(ip)) return false;
   const parts = ip.split('.');
+  // Reject octal notation (leading zeros like 0177)
+  if (parts.some(p => p.length > 1 && p.startsWith('0'))) return false;
   return parts.every(part => {
     const num = parseInt(part, 10);
     return num >= 0 && num <= 255;

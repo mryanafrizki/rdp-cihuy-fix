@@ -5,10 +5,12 @@ import { NextRequest, NextResponse } from 'next/server'
 import { notifyError } from '@/lib/telegram-notify'
 
 export async function GET(request: NextRequest) {
+  const session = await auth()
   const { searchParams } = new URL(request.url)
 
-  // Popup mode: return all entries with showPopup=true (no pagination)
+  // Popup mode: available to authenticated users (for dashboard popup)
   if (searchParams.get('popup') === 'true') {
+    if (!session?.user?.id) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
     const data = await db
       .select()
       .from(schema.changelog)
@@ -16,6 +18,12 @@ export async function GET(request: NextRequest) {
       .orderBy(desc(schema.changelog.createdAt))
 
     return NextResponse.json({ success: true, data })
+  }
+
+  // Full list: admin only
+  if (!session?.user?.id) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+  if (session.user.role !== 'admin' && session.user.role !== 'super_admin') {
+    return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
   }
 
   const page = parseInt(searchParams.get('page') || '1')
@@ -62,7 +70,7 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ success: true })
   } catch (error: any) {
     notifyError('/api/admin/changelog', error.message || String(error))
-    return NextResponse.json({ error: error.message }, { status: 500 })
+    return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
   }
 }
 
@@ -83,7 +91,7 @@ export async function PUT(request: NextRequest) {
     return NextResponse.json({ success: true })
   } catch (error: any) {
     notifyError('/api/admin/changelog', error.message || String(error))
-    return NextResponse.json({ error: error.message }, { status: 500 })
+    return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
   }
 }
 

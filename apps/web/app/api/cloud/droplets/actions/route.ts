@@ -34,6 +34,6 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ success: true, data: data.action })
   } catch (e: any) {
     notifyError('/api/cloud/droplets/actions', e.message || String(e))
-    return NextResponse.json({ error: e.message }, { status: 500 })
+    return NextResponse.json({ error: e.name === 'DOApiError' ? e.message : 'Cloud service error' }, { status: 500 })
   }
 }

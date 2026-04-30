@@ -5,10 +5,11 @@ import { doFetch } from '@/lib/do-fetch'
 import { addBalance } from '@/lib/db/operations'
 import { signRequest } from '@/lib/hmac-sign'
 import { notifyNewOrder } from '@/lib/telegram-notify'
+import { auth } from '@/lib/auth-config'
 
 /**
  * Process pending RDP installations for newly created droplets.
- * Called periodically by the frontend (on page load / interval).
+ * Called by: cron job (x-cron-secret), ubuntu-service (x-api-key), or authenticated user (session).
  *
  * Flow per pending droplet:
  *   pending_ip → poll DO for IP → pending_active
@@ -19,15 +20,22 @@ import { notifyNewOrder } from '@/lib/telegram-notify'
  * On failure at any step after 20 minutes: mark failed + refund.
  */
 export async function POST(request: NextRequest) {
-  // Simple auth: only allow from same origin or with API key
+  // Authenticate: CRON_SECRET, UBUNTU_API_KEY, or logged-in user session
+  const cronSecret = request.headers.get('x-cron-secret')
   const apiKey = request.headers.get('x-api-key')
   const ubuntuApiKey = process.env.UBUNTU_API_KEY
-  const isInternal = request.headers.get('origin')?.includes('cobain.dev') ||
-                     request.headers.get('referer')?.includes('cobain.dev') ||
-                     (apiKey && apiKey === ubuntuApiKey)
+  const validCron = cronSecret && cronSecret === process.env.CRON_SECRET
+  const validApiKey = apiKey && ubuntuApiKey && apiKey === ubuntuApiKey
 
-  // Also allow from same-origin fetch (no origin header in server-side)
-  // For security, we just process — the data is already in DB, no user input needed
+  let validSession = false
+  if (!validCron && !validApiKey) {
+    const session = await auth()
+    validSession = !!session?.user?.id
+  }
+
+  if (!validCron && !validApiKey && !validSession) {
+    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+  }
 
   const pending = await db
     .select()
@@ -236,7 +244,7 @@ export async function POST(request: NextRequest) {
             results.push({ dropletId: droplet.dropletId, status: 'triggering', error: 'Trigger failed' })
           }
         } catch (e: any) {
-          results.push({ dropletId: droplet.dropletId, status: 'triggering', error: e.message })
+          results.push({ dropletId: droplet.dropletId, status: 'triggering', error: 'trigger failed' })
         }
       } else if (status === 'triggered') {
         // Already done, mark as not pending
@@ -246,7 +254,7 @@ export async function POST(request: NextRequest) {
         results.push({ dropletId: droplet.dropletId, status: 'done' })
       }
     } catch (e: any) {
-      results.push({ dropletId: droplet.dropletId, status: 'error', error: e.message })
+      results.push({ dropletId: droplet.dropletId, status: 'error', error: 'processing failed' })
     }
   }
 

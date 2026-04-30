@@ -36,7 +36,7 @@ export async function POST(request: NextRequest) {
     if (!ubuntuServiceUrl) throw new Error('UBUNTU_SERVICE_URL not configured')
 
     // Sanitize password to prevent shell command injection
-    const SHELL_UNSAFE = /["`$\\|;&(){}\n\r]/
+    const SHELL_UNSAFE = /["`'$\\|;&(){}\n\r]/
     if (SHELL_UNSAFE.test(new_password)) {
       return NextResponse.json({ success: false, error: 'Password contains invalid characters' }, { status: 400 })
     }
@@ -63,6 +63,6 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ success: true })
   } catch (e: any) {
     notifyError('/api/cloud/droplets/password', e.message || String(e))
-    return NextResponse.json({ error: e.message }, { status: 500 })
+    return NextResponse.json({ error: e.name === 'DOApiError' ? e.message : 'Cloud service error' }, { status: 500 })
   }
 }

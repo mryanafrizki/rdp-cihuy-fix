@@ -144,7 +144,7 @@ export async function POST(request: Request) {
     notifyError('/api/topup', String(error))
     return NextResponse.json({ 
       success: false, 
-      error: error.message || 'Internal server error' 
+      error: 'Internal server error' 
     }, { status: 500 })
   }
 }

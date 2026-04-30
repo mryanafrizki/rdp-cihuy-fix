@@ -50,6 +50,6 @@ export async function GET(request: NextRequest) {
     })
   } catch (e: any) {
     notifyError('/api/cloud/balance', e.message || String(e))
-    return NextResponse.json({ error: e.message }, { status: 500 })
+    return NextResponse.json({ error: e.name === 'DOApiError' ? e.message : 'Cloud service error' }, { status: 500 })
   }
 }
