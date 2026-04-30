@@ -133,12 +133,19 @@ app.post('/api/trigger-rdp', async (req, res) => {
     // Keep original in server logs
     console.log(`[${installation_id}] ${log}`);
     
-    // Filter out ubuntu VPS IP
-    let cleanLog = log.replace(/168\.144\.34\.139/g, '');
+    // Filter out internal VPS IPs
+    let cleanLog = log.replace(/\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b/g, '[server]');
     // Filter paths
     cleanLog = cleanLog.replace(/\/[a-zA-Z0-9_\-\.\/]{3,}/g, '');
     // Filter URLs
     cleanLog = cleanLog.replace(/https?:\/\/[^\s]+/g, '[hidden]');
+    // Filter sensitive filenames (.enc, .sh, script names, backend API references)
+    cleanLog = cleanLog.replace(/\b\w+\.sh\.enc\b/g, '[script]');
+    cleanLog = cleanLog.replace(/\b\w+\.sh\b/g, '[script]');
+    cleanLog = cleanLog.replace(/via backend API/gi, '');
+    cleanLog = cleanLog.replace(/Decrypting \[script\]/gi, 'Preparing installation scripts');
+    cleanLog = cleanLog.replace(/Decrypted \[script\] successfully/gi, 'Scripts ready');
+    cleanLog = cleanLog.replace(/decrypt(ing|ed)?/gi, 'processing');
     // Skip if empty after filtering
     if (!cleanLog.trim()) return;
     
