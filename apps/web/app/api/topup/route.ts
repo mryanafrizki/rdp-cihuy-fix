@@ -51,15 +51,20 @@ export async function POST(request: Request) {
     const feeMode = typeof rawValue === 'string' ? rawValue : ((rawValue as Record<string, string>)?.mode || 'user')
 
     // Calculate fees based on mode
+    // Saweria always adds ~0.7% fee on their side (rounded up)
     let feePercent = 0
     let feeFlat = 0
     if (feeMode === 'user') {
-      feePercent = Math.ceil(amount * 0.007) // 0.7%
+      // User pays: our fee + Saweria fee
+      feePercent = Math.ceil(amount * 0.007) // 0.7% our fee
       feeFlat = 200
     }
-    // Admin mode: no fee, just unique code
     const uniqueCode = Math.floor(Math.random() * 99) + 1 // 1-99
-    const totalCharge = amount + feePercent + feeFlat + uniqueCode
+    const nominalToGateway = amount + feePercent + feeFlat + uniqueCode
+
+    // Estimate what Saweria will charge (they add ~0.7% and round up)
+    const saweriaFee = Math.ceil(nominalToGateway * 0.007)
+    const totalCharge = nominalToGateway + saweriaFee
     
     // Insert transaction record (amount = original credit the user receives)
     let transaction
