@@ -255,7 +255,7 @@ export default function PaymentPage({ params }: { params: Promise<{ paymentId: s
           </motion.div>
           <h1 className="text-2xl font-bold text-white mt-6">Payment Successful!</h1>
           <p className="mt-2" style={{ color: 'var(--text-secondary, #8a8b9e)' }}>
-            Rp {(payment.total_charge || payment.amount)?.toLocaleString('id-ID')} has been added to your balance
+            Rp {Number(payment.total_charge || payment.amount || 0).toLocaleString('id-ID')} has been added to your balance
           </p>
           <RedirectCountdown to="/dashboard/topup?success=true" seconds={5} />
         </motion.div>
@@ -335,7 +335,7 @@ export default function PaymentPage({ params }: { params: Promise<{ paymentId: s
             Total harus dibayar
           </div>
           <div className="text-4xl font-bold text-white mt-2 tracking-tight">
-            Rp {(payment.total_charge || payment.amount)?.toLocaleString('id-ID')}
+            Rp {Number(payment.total_charge || payment.amount || 0).toLocaleString('id-ID')}
           </div>
           <div className="text-xs mt-2" style={{ color: 'var(--text-muted, #55566a)' }}>
             Sudah termasuk fee + kode unik
