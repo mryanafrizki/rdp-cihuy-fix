@@ -2,8 +2,6 @@
 
 Automated Windows RDP provisioning platform — web panel + Cloudflare Workers.
 
-> 🇮🇩 [Versi Bahasa Indonesia](#versi-bahasa-indonesia) ada di bawah.
-
 ## Architecture
 
 ```
@@ -21,13 +19,46 @@ Automated Windows RDP provisioning platform — web panel + Cloudflare Workers.
                     └──────┬──────────────────────────┘
                            │
 ┌──────────────────────────▼──────────────────────────┐
-│  Dokploy VPS                                         │
+│  VPS (Dokploy)                                       │
 │                                                      │
 │  cobain-web (Next.js :3000) ── PostgreSQL :5432      │
 │       │                                              │
 │  ubuntu-service (:3001) ── SSH ── VPS Target         │
 └──────────────────────────────────────────────────────┘
 ```
+
+## Minimum Specs
+
+### Single VPS (All-in-One)
+
+| Resource | Minimum | Recommended |
+|---|---|---|
+| **RAM** | 4 GB | 8 GB |
+| **CPU** | 2 vCPU | 4 vCPU |
+| **Disk** | 40 GB SSD | 60 GB SSD |
+| **OS** | Ubuntu 22.04+ | Ubuntu 24.04 |
+
+> ⚠️ **2 GB RAM TIDAK CUKUP** — Next.js build butuh ~1.5 GB, PostgreSQL + Docker overhead ~1 GB. VPS akan crash saat build.
+
+### Dual VPS (Recommended for Production)
+
+**VPS 1 — Frontend + Database:**
+
+| Resource | Spec |
+|---|---|
+| RAM | 4 GB+ |
+| CPU | 2 vCPU+ |
+| Fungsi | cobain-web (Next.js) + PostgreSQL |
+
+**VPS 2 — Backend (SSH Service):**
+
+| Resource | Spec |
+|---|---|
+| RAM | 2 GB+ |
+| CPU | 1 vCPU+ |
+| Fungsi | ubuntu-service + saweria-proxy |
+
+> Keuntungan 2 VPS: isolasi security (backend SSH tidak exposed ke internet), build tidak ganggu SSH operations, bisa scale independent.
 
 ## Tech Stack
 
@@ -38,257 +69,16 @@ Automated Windows RDP provisioning platform — web panel + Cloudflare Workers.
 | Database | PostgreSQL + Drizzle ORM |
 | Auth | Auth.js v5 (credentials, bcrypt) |
 | Payment | Saweria PG (QRIS) via Cloudflare Gateway Worker |
-| Captcha | Cloudflare Turnstile (env var configurable) |
+| Captcha | Cloudflare Turnstile |
+| Encryption | AES-256-GCM (data at rest) |
 | Deploy | Dokploy (Docker/Nixpacks) |
 | Monorepo | Turborepo |
 
-## Setup Order (from scratch)
-
-```
-Step 1 → saweria-proxy         Dokploy VPS           Docker container
-Step 2 → saweria-pg            Local PC → CF         Cloudflare Worker + D1
-Step 3 → cobain-gateway        Local PC → CF         Cloudflare Worker
-Step 4 → PostgreSQL            Dokploy VPS           Database service
-Step 5 → ubuntu-service        Dokploy VPS           Nixpacks application
-Step 6 → cobain-web            Dokploy VPS           Nixpacks application
-Step 7 → Database migrations   SSH to VPS            SQL
-Step 8 → Create admin          SSH to VPS            SQL INSERT
-```
-
-> **Workers** (Step 1-3): deploy from **local PC** — requires `wrangler login` + browser.
-> **VPS** (Step 4-8): setup via **Dokploy dashboard** + **SSH**.
-
----
-
-### Step 1: Saweria Proxy (Dokploy)
-
-1. Install Dokploy: `curl -sSL https://dokploy.com/install.sh | sh`
-2. Open `http://VPS_IP:3000`, register admin
-3. Create Project → Create Application
-4. Git: `https://github.com/mryanafrizki/saweria-pg.git`, branch `main`, build path `/saweria-proxy`
-5. Build: **Dockerfile**
-6. Environment:
-   ```
-   PROXY_SECRET=your_proxy_secret
-   PORT=3001
-   ```
-7. Domains → Generate → port `3001`
-8. Deploy
-
-**Save:** `PROXY_URL` (domain) + `PROXY_SECRET`
-
-### Step 2: Saweria PG Worker (Local PC)
-
-```bash
-git clone https://github.com/mryanafrizki/saweria-pg.git
-cd saweria-pg && npm install
-npx wrangler login
-npx wrangler d1 create your-db-name
-```
-
-Edit `wrangler.jsonc` → set `database_id`, `PROXY_URL`, `PROXY_SECRET`.
-
-Create tables in **Cloudflare Dashboard → D1 → Console** (see SQL in full guide below).
-
-```bash
-npx wrangler secret put ADMIN_API_KEY
-npx wrangler deploy
-```
-
-Create merchant at `/panel` → **Save:** `spg_xxx` (API key) + `whsec_xxx` (webhook secret)
-
-### Step 3: Cobain Gateway Worker (Local PC)
-
-```bash
-cd cobain-gateway-worker && npm install
-npx wrangler secret put SAWERIA_PG_URL          # from Step 2
-npx wrangler secret put SAWERIA_API_KEY          # spg_xxx from Step 2
-npx wrangler secret put SAWERIA_WEBHOOK_SECRET   # whsec_xxx from Step 2
-npx wrangler secret put GATEWAY_SECRET           # generate random hex
-npx wrangler secret put COBAIN_WEB_URL           # https://your-domain
-npx wrangler deploy
-```
-
-**Save:** gateway URL + `GATEWAY_SECRET`
-
-### Step 4-6: Dokploy (PostgreSQL + ubuntu-service + cobain-web)
-
-Create in Dokploy dashboard. **Full environment variables below.**
-
-#### ubuntu-service Environment
-
-```
-API_KEY=your_shared_api_key
-DATABASE_URL=postgresql://USER:PASS@POSTGRES_HOSTNAME:5432/DBNAME
-WORKER_URL=https://rotate.eov.my.id
-WORKER_API_SECRET=your_worker_secret
-PORT=3001
-NODE_ENV=production
-```
-
-#### cobain-web Environment
-
-> **⚠️ ALL variables must be set BEFORE first deploy.**
-
-```
-DATABASE_URL=postgresql://USER:PASS@POSTGRES_HOSTNAME:5432/DBNAME
-AUTH_SECRET=random_base64_string
-AUTH_TRUST_HOST=true
-AUTH_URL=https://your-domain.com
-NEXT_PUBLIC_API_URL=http://localhost:3000
-UBUNTU_WEBHOOK_URL=http://UBUNTU_SERVICE_HOSTNAME:3001
-UBUNTU_SERVICE_URL=http://UBUNTU_SERVICE_HOSTNAME:3001
-UBUNTU_API_KEY=same_as_ubuntu_service_API_KEY
-ENVIRONMENT=production
-NODE_ENV=production
-PORT=3000
-GATEWAY_URL=https://your-gateway-worker-url
-GATEWAY_SECRET=your_gateway_secret
-NEXT_PUBLIC_TURNSTILE_SITE_KEY=1x00000000000000000000AA
-TURNSTILE_SECRET_KEY=1x0000000000000000000000000000000AA
-NEXT_PUBLIC_SITE_URL=https://your-domain.com
-WORKER_URL=https://rotate.eov.my.id
-WORKER_API_SECRET=your_worker_secret
-```
-
-**Checklist before deploy:**
-- [ ] `DATABASE_URL` — PostgreSQL internal hostname from Step 4
-- [ ] `UBUNTU_SERVICE_URL` — ubuntu-service internal hostname from Step 5
-- [ ] `UBUNTU_API_KEY` — matches `API_KEY` in ubuntu-service
-- [ ] `GATEWAY_URL` — gateway worker URL from Step 3
-- [ ] `GATEWAY_SECRET` — secret from Step 3
-- [ ] `WORKER_URL` — worker-rotate URL (for dedicated RDP install)
-- [ ] `WORKER_API_SECRET` — worker-rotate secret
-
-#### Production Example
-
-```
-DATABASE_URL=postgresql://aiserve:Bakso123@rdp-aiserve-jgg9ch:5432/aiserve
-AUTH_SECRET=k9Xm2pL7vR4wQ8nJ3hF6tY1bA5cE0gUi
-AUTH_TRUST_HOST=true
-AUTH_URL=https://rdp.ceo-aiserve.web.id
-NEXT_PUBLIC_API_URL=http://localhost:3000
-UBUNTU_WEBHOOK_URL=http://rdp-ubuntusvice-sxshsg:3001
-UBUNTU_SERVICE_URL=http://rdp-ubuntusvice-sxshsg:3001
-UBUNTU_API_KEY=fd18875900a62f0e89464dfb505567d450694cc77d835f1345e1e45074348f2f
-ENVIRONMENT=production
-NODE_ENV=production
-PORT=3000
-GATEWAY_URL=https://gate.ceo-aiserve.web.id
-GATEWAY_SECRET=5ff62de724cba90765d9869673dbc4bd8f9d9c9b49ebe027fd36dea03b61207c
-NEXT_PUBLIC_TURNSTILE_SITE_KEY=1x00000000000000000000AA
-TURNSTILE_SECRET_KEY=1x0000000000000000000000000000000AA
-NEXT_PUBLIC_SITE_URL=https://rdp.ceo-aiserve.web.id
-WORKER_URL=https://rotate.eov.my.id
-WORKER_API_SECRET=cd5d63a6bfaea35d4623a0728e694437
-```
-
-### Step 7: Database Migrations
-
-```bash
-ssh root@VPS_IP
-CONTAINER=$(docker ps --format "{{.Names}}" | grep postgres | grep -v dokploy)
-git clone https://github.com/mryanafrizki/rdp-cihuy.git /tmp/rdp
-for f in $(ls /tmp/rdp/supabase/migrations/*.sql | sort); do
-  echo "Running $(basename $f)..."
-  docker exec -i $CONTAINER psql -U DB_USER -d DB_NAME < "$f" 2>/dev/null || true
-done
-rm -rf /tmp/rdp
-```
-
-### Step 8: Create Super Admin
-
-Generate hash (local PC):
-```bash
-node -e "const b=require('bcryptjs');console.log(b.hashSync('YourPassword',12))"
-```
-
-Insert (SSH to VPS):
-```bash
-docker exec -i $CONTAINER psql -U DB_USER -d DB_NAME -c \
-  "INSERT INTO users (email, password_hash, role, email_confirmed) \
-   VALUES ('admin@email.com', 'PASTE_HASH', 'super_admin', true) \
-   ON CONFLICT (email) DO UPDATE SET password_hash='PASTE_HASH', role='super_admin', email_confirmed=true;"
-```
-
----
-
-## Additional Guides
-
-- **[BUILD-GUIDE.md](./BUILD-GUIDE.md)** — Compile RDP installer binary (.img), encrypt scripts, change PC name
-- **[saweria-pg API Docs](https://github.com/mryanafrizki/saweria-pg)** — Payment gateway API
-
-## SMTP (Email Verification)
-
-Optional. Add to cobain-web environment:
-
-```
-SMTP_HOST=smtp.resend.com
-SMTP_PORT=465
-SMTP_USER=resend
-SMTP_PASS=re_xxxxxxxxxxxx
-SMTP_FROM=noreply@yourdomain.com
-```
-
-| Provider | Host | Port | Password |
-|---|---|---|---|
-| **Resend** | `smtp.resend.com` | `465` | API key from resend.com |
-| **Gmail** | `smtp.gmail.com` | `465` | App Password (not regular password) |
-| **Brevo** | `smtp-relay.brevo.com` | `587` | SMTP key from brevo.com |
-
-## Turnstile (Production Captcha)
-
-Default: test keys (always passes). For production:
-
-1. Cloudflare Dashboard → Turnstile → Add Site
-2. Update cobain-web environment:
-   ```
-   NEXT_PUBLIC_TURNSTILE_SITE_KEY=your-real-site-key
-   TURNSTILE_SECRET_KEY=your-real-secret-key
-   ```
-3. Redeploy cobain-web
-
-## Change PC Name
-
-Edit `rdp/scripts/windows-change-rdp-port.bat` line 12:
-```bat
-set "NEWNAME=COBAIN-DEV"
-```
-Change `COBAIN-DEV` to your desired name, then rebuild binary (see [BUILD-GUIDE.md](./BUILD-GUIDE.md)).
-
-## Ports After RDP Install
-
-After dedicated RDP installation completes:
-
-| Service | Port | Protocol | Credentials |
-|---|---|---|---|
-| **RDP** | `22` | Remote Desktop | `administrator` / password from order |
-| **SSH** | `2222` | OpenSSH Server | `administrator` / same password |
-
-SSH is auto-installed (OpenSSH Server) on Windows during post-install. To change ports, edit `rdp/scripts/windows-change-rdp-port.bat` and rebuild binary.
-
-## Troubleshooting
-
-| Error | Fix |
-|---|---|
-| `relation "users" does not exist` | Run migrations (Step 7) |
-| `Missing HMAC headers` | Fixed in repo — redeploy cobain-web |
-| Turnstile "Security verification failed" | Check Turnstile env vars match |
-| Payment QR not showing | Check `GATEWAY_URL` + `GATEWAY_SECRET` |
-| OS versions dropdown empty | Run migration 017 — fixes categories |
-| Domain 404 in Dokploy | HTTPS ON + Certificate Provider = None → use Let's Encrypt or disable HTTPS |
-| `wrangler login` fails on VPS | Normal — deploy workers from local PC only |
-| `bash: syntax error near &&` | Fixed in repo — redeploy ubuntu-service |
-| Install killed mid-progress | Don't redeploy during active RDP installation |
-| `invalid email pass` | Password hash wrong — regenerate with bcryptjs (Step 8) |
-| `Cannot read properties (prepare)` | D1 database_id wrong in wrangler.jsonc |
-| Saweria `404 Not Found` | User ID must be UUID — repo auto-resolves username |
-
----
-
 ## Key Features
 
-- User registration + email verification
+- User registration + email verification (SMTP)
+- Free credit on email confirmation (7-day expiry)
+- Auto-delete unconfirmed accounts after 3 days
 - QRIS topup via Saweria PG
 - Order RDP — dedicated (full OS reinstall) or Docker
 - OS options: Windows 7-11, Server 2003-2025, Lite editions
@@ -296,187 +86,304 @@ SSH is auto-installed (OpenSSH Server) on Windows during post-install. To change
 - Admin panel — users, transactions, installations, changelog
 - Realtime installation progress tracking
 - HMAC request signing (web ↔ ubuntu-service)
-- Turnstile captcha (configurable via env var)
+- Turnstile captcha (fail-closed)
 - Rate limiting on all critical endpoints
+- Security headers (HSTS, CSP, X-Frame-Options)
 - Telegram notifications
 
 ---
 
----
+## Setup dari 0 (Single VPS)
 
-# Versi Bahasa Indonesia
+### Prerequisites
 
-## Setup dari 0 (Urutan Wajib)
+- VPS dengan minimum 4 GB RAM
+- Domain yang sudah di-pointing ke Cloudflare DNS
+- `wrangler` CLI terinstall di PC lokal (`npm install -g wrangler`)
+- Akun Saweria untuk payment gateway
+
+### Urutan Setup
 
 ```
-Step 1 → saweria-proxy         VPS Dokploy           Docker container
-Step 2 → saweria-pg            PC Lokal → CF         Cloudflare Worker + D1
-Step 3 → cobain-gateway        PC Lokal → CF         Cloudflare Worker
-Step 4 → PostgreSQL            VPS Dokploy           Database service
-Step 5 → ubuntu-service        VPS Dokploy           Aplikasi Nixpacks
-Step 6 → cobain-web            VPS Dokploy           Aplikasi Nixpacks
-Step 7 → Migrasi database      SSH ke VPS            SQL
-Step 8 → Buat admin            SSH ke VPS            SQL INSERT
+Step 1 → Install Dokploy          VPS                 curl install
+Step 2 → saweria-proxy            VPS (Dokploy)       Nixpacks app
+Step 3 → saweria-pg worker        PC Lokal → CF       Cloudflare Worker + D1
+Step 4 → cobain-gateway worker    PC Lokal → CF       Cloudflare Worker
+Step 5 → PostgreSQL               VPS (Dokploy)       Database service
+Step 6 → ubuntu-service           VPS (Dokploy)       Nixpacks app
+Step 7 → cobain-web               VPS (Dokploy)       Nixpacks app
+Step 8 → Database migrations      SSH ke VPS          SQL
+Step 9 → Create admin             SSH ke VPS          SQL INSERT
+Step 10 → Setup cron jobs         cron-job.org        3 cron jobs
 ```
 
-> **Workers** (Step 1-3): deploy dari **PC lokal** — butuh `wrangler login` + browser.
-> **VPS** (Step 4-8): setup via **Dokploy dashboard** + **SSH**.
+### Step 1: Install Dokploy
 
-### Step 1: Saweria Proxy (Dokploy)
+```bash
+curl -sSL https://dokploy.com/install.sh | sh
+```
 
-1. Install Dokploy di VPS: `curl -sSL https://dokploy.com/install.sh | sh`
-2. Buka `http://IP_VPS:3000`, daftar admin
-3. Buat Project → Buat Application
-4. Git: `https://github.com/mryanafrizki/saweria-pg.git`, branch `main`, build path `/saweria-proxy`
-5. Build: **Dockerfile**
-6. Environment:
+Buka `http://VPS_IP:3000`, register admin.
+
+### Step 2: Saweria Proxy (Dokploy)
+
+1. Create Project → Create Application
+2. Git: `https://github.com/YOUR_REPO/saweria-pg.git`, branch `main`, build path `/saweria-proxy`
+3. Build: **Nixpacks**
+4. Environment:
    ```
-   PROXY_SECRET=secret_proxy_kamu
+   PROXY_SECRET=<generate: node -e "console.log(require('crypto').randomBytes(16).toString('hex'))">
    PORT=3001
    ```
-7. Domains → Generate → port `3001`
-8. Deploy
-9. Test: buka domain → harus return `{"status":"ok","service":"saweria-proxy"}`
+5. Domains → tambah domain → port `3001` → HTTPS + Let's Encrypt
+6. Deploy
 
-**Catat:** `PROXY_URL` (domain) + `PROXY_SECRET`
-
-### Step 2: Saweria PG Worker (PC Lokal)
+### Step 3: Saweria PG Worker (PC Lokal)
 
 ```bash
-git clone https://github.com/mryanafrizki/saweria-pg.git
+git clone YOUR_SAWERIA_PG_REPO
 cd saweria-pg && npm install
 npx wrangler login
-npx wrangler d1 create nama-db-kamu
+npx wrangler d1 create your-db-name
 ```
 
-Edit `wrangler.jsonc` → isi `database_id`, `PROXY_URL`, `PROXY_SECRET`.
+Edit `wrangler.jsonc`:
+- `name`: nama worker unik
+- `database_id`: dari output d1 create
+- `PROXY_URL`: domain saweria-proxy dari Step 2
+- `PROXY_SECRET`: sama dengan Step 2
 
-Buat tabel di **Cloudflare Dashboard → D1 → database → Console** — jalankan SQL satu per satu (lihat guide lengkap di atas).
+Buat tabel D1:
+```bash
+npx wrangler d1 execute YOUR_DB_NAME --remote --file=schema.sql
+npx wrangler d1 execute YOUR_DB_NAME --remote --command="CREATE TABLE IF NOT EXISTS proxies (id TEXT PRIMARY KEY, name TEXT NOT NULL, url TEXT NOT NULL, secret TEXT NOT NULL, is_active INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL DEFAULT (datetime('now'))); ALTER TABLE merchants ADD COLUMN proxy_id TEXT REFERENCES proxies(id); ALTER TABLE merchants ADD COLUMN webintercept_url TEXT; ALTER TABLE merchants ADD COLUMN webintercept_secret TEXT;"
+```
 
 ```bash
-npx wrangler secret put ADMIN_API_KEY    # password panel admin
+npx wrangler secret put ADMIN_API_KEY
 npx wrangler deploy
 ```
 
-Buat merchant di panel (`/panel`):
-- Saweria User ID: username saweria (auto-resolve ke UUID)
+Set custom domain di CF dashboard → Workers → Settings → Domains & Routes.
 
-**Catat:** URL worker, `spg_xxx` (API key), `whsec_xxx` (webhook secret)
+Buat merchant di `/panel` → **Catat**: `spg_xxx` (API key), `whsec_xxx` (webhook secret)
 
-### Step 3: Cobain Gateway Worker (PC Lokal)
+### Step 4: Cobain Gateway Worker (PC Lokal)
 
 ```bash
 cd cobain-gateway-worker && npm install
-npx wrangler secret put SAWERIA_PG_URL          # URL dari Step 2
-npx wrangler secret put SAWERIA_API_KEY          # spg_xxx dari Step 2
-npx wrangler secret put SAWERIA_WEBHOOK_SECRET   # whsec_xxx dari Step 2
-npx wrangler secret put GATEWAY_SECRET           # generate: node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
-npx wrangler secret put COBAIN_WEB_URL           # https://domain-kamu
+```
+
+Edit `wrangler.toml` → ubah `name` ke nama unik.
+
+```bash
+npx wrangler secret put SAWERIA_PG_URL          # URL saweria-pg worker
+npx wrangler secret put SAWERIA_API_KEY          # spg_xxx dari Step 3
+npx wrangler secret put SAWERIA_WEBHOOK_SECRET   # whsec_xxx dari Step 3
+npx wrangler secret put GATEWAY_SECRET           # generate random hex 64 chars
+npx wrangler secret put COBAIN_WEB_URL           # https://your-domain
 npx wrangler deploy
 ```
 
-**Catat:** URL gateway + `GATEWAY_SECRET`
+Set custom domain di CF dashboard.
 
-### Step 4-6: Dokploy (PostgreSQL + ubuntu-service + cobain-web)
+### Step 5-7: Dokploy (PostgreSQL + ubuntu-service + cobain-web)
 
-Buat di Dokploy dashboard. Environment variables lengkap ada di bagian English di atas.
+Buat di Dokploy dashboard.
 
-> **⚠️ SEMUA environment variable WAJIB diisi SEBELUM deploy pertama kali.**
+#### PostgreSQL
+- Create Database → PostgreSQL 16
+- Catat: hostname, username, password, database name
 
-**Checklist sebelum deploy cobain-web:**
-- [ ] `DATABASE_URL` — hostname PostgreSQL internal dari Step 4
-- [ ] `UBUNTU_SERVICE_URL` — hostname ubuntu-service internal dari Step 5
-- [ ] `UBUNTU_API_KEY` — harus sama dengan `API_KEY` di ubuntu-service
-- [ ] `GATEWAY_URL` — URL gateway worker dari Step 3
-- [ ] `GATEWAY_SECRET` — secret dari Step 3
-- [ ] `WORKER_URL` — URL worker-rotate (untuk install RDP dedicated)
-- [ ] `WORKER_API_SECRET` — secret worker-rotate
+#### ubuntu-service
+- Git: repo kamu, branch `main`, build path `/apps/ubuntu-service`
+- Build: Nixpacks
+- Environment:
+  ```
+  API_KEY=<generate 64 char hex>
+  DATABASE_URL=postgresql://USER:PASS@POSTGRES_HOSTNAME:5432/DBNAME
+  WORKER_URL=https://rotate.eov.my.id
+  WORKER_API_SECRET=<worker secret>
+  PORT=3001
+  NODE_ENV=production
+  ```
 
-### Step 7: Migrasi Database
+#### cobain-web
+- Git: repo kamu, branch `main`, build path `/apps/web`
+- Build: Nixpacks
+- Domain: your-domain → port 3000 → HTTPS + Let's Encrypt
+- Environment:
+  ```
+  DATABASE_URL=postgresql://USER:PASS@POSTGRES_HOSTNAME:5432/DBNAME
+  AUTH_SECRET=<generate base64 32 bytes>
+  AUTH_TRUST_HOST=true
+  AUTH_URL=https://your-domain
+  NEXT_PUBLIC_API_URL=http://localhost:3000
+  UBUNTU_WEBHOOK_URL=http://UBUNTU_HOSTNAME:3001
+  UBUNTU_SERVICE_URL=http://UBUNTU_HOSTNAME:3001
+  UBUNTU_API_KEY=<sama dengan API_KEY di ubuntu-service>
+  GATEWAY_URL=https://gateway-worker-domain
+  GATEWAY_SECRET=<sama dengan gateway worker>
+  WORKER_URL=https://rotate.eov.my.id
+  WORKER_API_SECRET=<worker secret>
+  NEXT_PUBLIC_TURNSTILE_SITE_KEY=<dari Cloudflare Turnstile>
+  TURNSTILE_SECRET_KEY=<dari Cloudflare Turnstile>
+  NEXT_PUBLIC_SITE_URL=https://your-domain
+  DATA_ENCRYPTION_KEY=<generate 64 char hex — WAJIB>
+  CRON_SECRET=<generate 64 char hex — WAJIB>
+  SMTP_HOST=smtp.resend.com
+  SMTP_PORT=587
+  SMTP_USER=resend
+  SMTP_PASS=<resend API key>
+  SMTP_FROM=noreply@your-domain
+  ENVIRONMENT=production
+  NODE_ENV=production
+  PORT=3000
+  ```
+
+> ⚠️ **SEMUA env var WAJIB diisi SEBELUM deploy pertama.**
+>
+> `DATA_ENCRYPTION_KEY` dan `CRON_SECRET` adalah env var BARU — app crash tanpa ini.
+>
+> `TURNSTILE_SECRET_KEY` WAJIB — captcha akan reject semua request kalau kosong.
+
+### Step 8: Database Migrations
 
 ```bash
-ssh root@IP_VPS
-CONTAINER=$(docker ps --format "{{.Names}}" | grep postgres | grep -v dokploy)
-git clone https://github.com/mryanafrizki/rdp-cihuy.git /tmp/rdp
+ssh root@VPS_IP
+CONTAINER=$(docker ps --format "{{.Names}}" | grep YOUR_POSTGRES_CONTAINER)
+git clone YOUR_REPO /tmp/rdp
 for f in $(ls /tmp/rdp/supabase/migrations/*.sql | sort); do
   echo "Running $(basename $f)..."
-  docker exec -i $CONTAINER psql -U USER_DB -d NAMA_DB < "$f" 2>/dev/null || true
+  docker exec -i $CONTAINER psql -U DB_USER -d DB_NAME < "$f" 2>/dev/null || true
 done
 rm -rf /tmp/rdp
 ```
 
-### Step 8: Buat Super Admin
+### Step 9: Create Super Admin
 
 Generate hash (PC lokal):
 ```bash
-node -e "const b=require('bcryptjs');console.log(b.hashSync('PasswordKamu',12))"
+node -e "const b=require('bcryptjs');console.log(b.hashSync('YourPassword',12))"
 ```
 
 Insert (SSH ke VPS):
 ```bash
-docker exec -i $CONTAINER psql -U USER_DB -d NAMA_DB -c \
+docker exec -i $CONTAINER psql -U DB_USER -d DB_NAME -c \
   "INSERT INTO users (email, password_hash, role, email_confirmed) \
    VALUES ('admin@email.com', 'PASTE_HASH', 'super_admin', true) \
    ON CONFLICT (email) DO UPDATE SET password_hash='PASTE_HASH', role='super_admin', email_confirmed=true;"
 ```
 
-### Ganti Nama PC
+### Step 10: Setup Cron Jobs
 
-Edit `rdp/scripts/windows-change-rdp-port.bat` baris 12:
-```bat
-set "NEWNAME=COBAIN-DEV"
-```
-Ganti `COBAIN-DEV` ke nama yang kamu mau, lalu rebuild binary (lihat [BUILD-GUIDE.md](./BUILD-GUIDE.md)).
+Buka [cron-job.org](https://cron-job.org) → Sign Up → buat 3 jobs:
 
-### Port Setelah Install RDP
-
-Setelah install RDP dedicated selesai:
-
-| Service | Port | Akses | Credentials |
+| Job | URL | Schedule | Header |
 |---|---|---|---|
-| **RDP** | `22` | Remote Desktop Client | `administrator` / password dari order |
-| **SSH** | `2222` | Terminal/PuTTY | `administrator` / password sama |
+| expire-free-credits | `POST https://your-domain/api/cron/expire-free-credits` | Every 1 hour | `x-cron-secret: <CRON_SECRET>` |
+| cleanup-unconfirmed | `POST https://your-domain/api/cron/cleanup-unconfirmed` | Every 6 hours | `x-cron-secret: <CRON_SECRET>` |
+| process-pending-rdp | `POST https://your-domain/api/cron/process-pending-rdp` | Every 2 minutes | `x-cron-secret: <CRON_SECRET>` |
 
-SSH (OpenSSH Server) otomatis di-install di Windows saat post-install. Untuk ganti port, edit `rdp/scripts/windows-change-rdp-port.bat` lalu rebuild binary.
+Tambah header `Content-Type: application/json` di setiap job.
 
-### SMTP (Email Verifikasi)
+---
 
-Opsional. Tambah di environment cobain-web:
+## Setup 2 VPS (Production)
 
-```
-SMTP_HOST=smtp.resend.com
-SMTP_PORT=465
-SMTP_USER=resend
-SMTP_PASS=re_xxxxxxxxxxxx
-SMTP_FROM=noreply@domain-kamu.com
-```
+### VPS 1 — Frontend + Database
 
-### Turnstile (Captcha Production)
+Install Dokploy, deploy:
+- PostgreSQL
+- cobain-web
 
-Default: test keys (selalu lolos). Untuk production:
+### VPS 2 — Backend
+
+Install Dokploy, deploy:
+- ubuntu-service
+- saweria-proxy
+
+### Konfigurasi
+
+1. **VPS 2** harus bisa diakses dari VPS 1 via internal network atau public IP
+2. Di cobain-web env vars, ubah:
+   ```
+   UBUNTU_SERVICE_URL=http://VPS2_IP:3001    # atau internal hostname
+   UBUNTU_WEBHOOK_URL=http://VPS2_IP:3001
+   ```
+3. Di ubuntu-service env vars, `DATABASE_URL` harus pointing ke PostgreSQL di VPS 1:
+   ```
+   DATABASE_URL=postgresql://USER:PASS@VPS1_IP:5432/DBNAME
+   ```
+4. PostgreSQL di VPS 1 perlu expose external port (Dokploy → Database → External Port → set port, misal 5432)
+5. PostgreSQL `pg_hba.conf` perlu allow connection dari VPS 2 IP
+
+### Keuntungan 2 VPS
+
+- **Security**: ubuntu-service (yang SSH ke target VPS) terisolasi dari frontend
+- **Performance**: Next.js build tidak ganggu SSH operations
+- **Scaling**: bisa upgrade VPS frontend tanpa affect backend, dan sebaliknya
+- **Reliability**: kalau satu VPS down, yang lain tetap jalan
+
+---
+
+## DNS Setup (Cloudflare)
+
+| Subdomain | Type | Content | Proxy |
+|---|---|---|---|
+| `your-web-domain` | A | VPS IP | DNS only (grey) |
+| `your-proxy-domain` | A | VPS IP | DNS only (grey) |
+| `your-gateway-domain` | — | *(CF Worker custom domain)* | — |
+| `your-saweria-pg-domain` | — | *(CF Worker custom domain)* | — |
+
+> ⚠️ **Jangan pakai Cloudflare Proxy (orange cloud)** untuk domain Dokploy — akan conflict dengan Let's Encrypt ACME challenge. Pakai **DNS only (grey cloud)**.
+
+---
+
+## SMTP (Email Verification)
+
+| Provider | Host | Port | Password |
+|---|---|---|---|
+| **Resend** | `smtp.resend.com` | `587` | API key dari resend.com |
+| **Gmail** | `smtp.gmail.com` | `465` | App Password |
+| **Brevo** | `smtp-relay.brevo.com` | `587` | SMTP key dari brevo.com |
+
+---
+
+## Turnstile (Captcha)
 
 1. Cloudflare Dashboard → Turnstile → Add Site
-2. Update environment cobain-web:
+2. Update cobain-web environment:
    ```
-   NEXT_PUBLIC_TURNSTILE_SITE_KEY=site-key-asli
-   TURNSTILE_SECRET_KEY=secret-key-asli
+   NEXT_PUBLIC_TURNSTILE_SITE_KEY=your-site-key
+   TURNSTILE_SECRET_KEY=your-secret-key
    ```
 3. Redeploy cobain-web
 
-### Troubleshooting
+> ⚠️ `TURNSTILE_SECRET_KEY` WAJIB di-set. Kalau kosong, semua request yang butuh captcha akan ditolak.
 
-| Error | Solusi |
+---
+
+## Troubleshooting
+
+| Error | Fix |
 |---|---|
-| `relation "users" does not exist` | Jalankan migrasi (Step 7) |
-| `Missing HMAC headers` | Sudah fix di repo — redeploy cobain-web |
-| Turnstile "Security verification failed" | Cek env var Turnstile cocok |
-| QR pembayaran gak muncul | Cek `GATEWAY_URL` + `GATEWAY_SECRET` |
-| Dropdown OS kosong | Jalankan migrasi 017 — fix kategori |
-| Domain 404 di Dokploy | HTTPS ON + Certificate Provider = None → pakai Let's Encrypt atau matikan HTTPS |
+| `relation "users" does not exist` | Jalankan migrations (Step 8) |
+| `DATA_ENCRYPTION_KEY environment variable is required` | Set `DATA_ENCRYPTION_KEY` di env vars |
+| Turnstile "Security verification failed" | Cek `TURNSTILE_SECRET_KEY` sudah di-set |
+| Payment QR not showing | Cek `GATEWAY_URL` + `GATEWAY_SECRET` |
+| OS versions dropdown empty | Jalankan migration 017 |
+| Domain 404 di Dokploy | Matikan Cloudflare Proxy (pakai DNS only) |
 | `wrangler login` gagal di VPS | Normal — deploy workers dari PC lokal saja |
-| `bash: syntax error near &&` | Sudah fix di repo — redeploy ubuntu-service |
-| Install RDP mati di tengah | Jangan redeploy saat instalasi aktif |
-| `invalid email pass` | Hash password salah — generate ulang dengan bcryptjs (Step 8) |
-| Saweria `404 Not Found` | User ID harus UUID — repo sudah auto-resolve dari username |
+| Build OOM killed | VPS RAM kurang — minimum 4 GB, tambah swap 4 GB |
+| Saweria 403 | saweria-proxy perlu pakai curl mode (bukan fetch) |
+| Free credit tidak muncul | Cek migration 018 sudah jalan + `free_credit` setting enabled di admin |
 
-> **⚠️ PENTING:** Jangan redeploy service apapun di Dokploy saat instalasi RDP sedang berjalan — container restart akan membunuh proses install.
+---
+
+## Ports After RDP Install
+
+| Service | Port | Protocol | Credentials |
+|---|---|---|---|
+| **RDP** | `22` | Remote Desktop | `administrator` / password dari order |
+| **SSH** | `2222` | OpenSSH Server | `administrator` / password sama |

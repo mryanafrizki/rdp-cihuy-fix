@@ -26,7 +26,7 @@ export default async function DashboardPage() {
   if (!user?.id) redirect('/login')
 
   // Parallel data fetching via Drizzle
-  const [profileRes, installationsCountRes, deductionsRes, activeCountRes, recentTxRes, recentInstRes] = await Promise.all([
+  const [profileRes, installationsCountRes, deductionsRes, activeCountRes, recentTxRes, recentInstRes, freeCreditRes] = await Promise.all([
     // Credit balance
     db.select({ credit_balance: schema.users.creditBalance })
       .from(schema.users)
@@ -69,9 +69,25 @@ export default async function DashboardPage() {
       ))
       .orderBy(desc(schema.installations.updatedAt))
       .limit(10),
+    // Free credit tracking (active, not expired)
+    db.select({
+      amount: schema.freeCreditTracking.amount,
+      expiresAt: schema.freeCreditTracking.expiresAt,
+      expired: schema.freeCreditTracking.expired,
+    })
+      .from(schema.freeCreditTracking)
+      .where(and(
+        eq(schema.freeCreditTracking.userId, user.id),
+        eq(schema.freeCreditTracking.expired, false),
+      ))
+      .limit(1),
   ])
 
   const creditBalance = Number(profileRes[0]?.credit_balance) || 0
+  const freeCredit = freeCreditRes[0]
+  const freeCreditAmount = freeCredit ? Number(freeCredit.amount) : 0
+  const freeCreditExpiresAt = freeCredit?.expiresAt ? new Date(freeCredit.expiresAt) : null
+  const freeCreditDaysLeft = freeCreditExpiresAt ? Math.max(0, Math.ceil((freeCreditExpiresAt.getTime() - Date.now()) / (24 * 60 * 60 * 1000))) : 0
   const completedInstallations = installationsCountRes[0]?.count ?? 0
   const totalSpent = deductionsRes.reduce((sum: number, tx: { amount: string | number }) => sum + Math.abs(Number(tx.amount)), 0)
   const activeProcesses = activeCountRes[0]?.count ?? 0
@@ -173,6 +189,38 @@ export default async function DashboardPage() {
           )
         })}
       </div>
+
+      {/* Free Credit Expiry Notice */}
+      {freeCredit && freeCreditDaysLeft > 0 && (
+        <div className="bg-amber-500/5 border border-amber-500/20 rounded-xl p-4 flex items-start gap-3">
+          <div className="bg-amber-500/10 rounded-lg p-1.5 mt-0.5">
+            <Clock className="size-4 text-amber-400" />
+          </div>
+          <div>
+            <p className="text-sm text-amber-200 font-medium">
+              Free credit Rp {formatNumber(freeCreditAmount)} expires in {freeCreditDaysLeft} day{freeCreditDaysLeft !== 1 ? 's' : ''}
+            </p>
+            <p className="text-xs text-gray-500 mt-1">
+              Welcome bonus will be deducted from your balance after expiry. Top up to keep your balance.
+            </p>
+          </div>
+        </div>
+      )}
+      {freeCredit && freeCreditDaysLeft === 0 && !freeCredit.expired && (
+        <div className="bg-rose-500/5 border border-rose-500/20 rounded-xl p-4 flex items-start gap-3">
+          <div className="bg-rose-500/10 rounded-lg p-1.5 mt-0.5">
+            <Clock className="size-4 text-rose-400" />
+          </div>
+          <div>
+            <p className="text-sm text-rose-200 font-medium">
+              Free credit Rp {formatNumber(freeCreditAmount)} expires today
+            </p>
+            <p className="text-xs text-gray-500 mt-1">
+              Unused welcome bonus will be deducted from your balance soon.
+            </p>
+          </div>
+        </div>
+      )}
 
       {/* Recent Activity */}
       <div className="bg-gray-900/80 border border-gray-800/60 rounded-xl">
