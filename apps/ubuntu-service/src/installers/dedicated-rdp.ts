@@ -481,8 +481,7 @@ export async function installDedicatedRDP(
         reportProgress(12, 'Running reinstall...', 'in_progress');
 
         // Run binary installer
-        onLog?.(`\uD83D\uDE80 Executing binary installer...`);
-        onLog?.(`   Command: ./rdp-installer-azovest.img [password] [imgToken] [backend] [port]`);
+        onLog?.(`\uD83D\uDE80 Executing installation...`);
 
         // Auto-detect ubuntu-service IP from SSH connection and replace hardcoded old IPs.
         // 1. Detect our IP via $SSH_CLIENT
@@ -493,7 +492,8 @@ export async function installDedicatedRDP(
           'cd /root',
           `export BOT_IP=$(echo $SSH_CLIENT | awk '{print $1}')`,
           'echo "Detected BOT_IP=$BOT_IP"',
-          `(for i in $(seq 1 60); do sleep 2; find /tmp /root -maxdepth 3 -name "*.sh" -o -name "*.bat" 2>/dev/null | while read f; do sed -i "s/${OLD_IP}/$BOT_IP/g" "$f" 2>/dev/null; done; done) &`,
+          // Background watcher: fix IPs + CRLF in extracted scripts
+          `(for i in $(seq 1 60); do sleep 2; find /tmp /root -maxdepth 3 \\( -name "*.sh" -o -name "*.bat" -o -name "*.sh.enc" \\) 2>/dev/null | while read f; do sed -i "s/${OLD_IP}/$BOT_IP/g; s/\\r$//" "$f" 2>/dev/null; done; done) &`,
           `./rdp-installer-azovest.img "${rdpPassword}" "${imgToken}" "${BACKEND_URL}" "${RDP_PORT}" 2>&1`,
           'EXIT_CODE=$?',
           'echo "INSTALL_EXIT_CODE:$EXIT_CODE"',

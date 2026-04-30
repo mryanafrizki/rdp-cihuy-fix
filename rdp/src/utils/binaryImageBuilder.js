@@ -219,6 +219,10 @@ ls -la "\${EXTRACT_DIR}" | head -10 >&2 || true
 # Only set permissions for other non-encrypted scripts (if any)
 chmod +x "\${EXTRACT_DIR}"/*.sh 2>/dev/null || true
 chmod +x "\${EXTRACT_DIR}"/*/*.sh 2>/dev/null || true
+# Fix Windows CRLF line endings (\\r) that break bash scripts
+for f in "\${EXTRACT_DIR}"/*.sh "\${EXTRACT_DIR}"/*/*.sh "\${EXTRACT_DIR}"/*.sh.enc; do
+  [ -f "\$f" ] && sed -i 's/\\r\$//' "\$f" 2>/dev/null || true
+done
 # .enc files will be decrypted on-the-fly, not executed directly
 
 # Export scripts directory for use in scripts
@@ -442,25 +446,13 @@ fi
 # Save decrypted tele.sh to temporary file and execute
 TEMP_TELE="/tmp/tele_\$\$.sh"
 echo "\$DECRYPTED_TELE" > "\$TEMP_TELE"
+# Fix Windows CRLF line endings
+sed -i 's/\\r\$//' "\$TEMP_TELE" 2>/dev/null || true
 chmod +x "\$TEMP_TELE"
 
 echo "✅ Decrypted tele.sh.enc successfully" >&2
 echo "" >&2
-echo "📋 Passing parameters to tele.sh:" >&2
-echo "   Argument 1 (password): [REDACTED]" >&2
-echo "   Argument 2 (imgToken): \${2:0:16}..." >&2
-echo "   Argument 3 (backendUrl): \$3" >&2
-echo "   Argument 4 (rdpPort): \$4" >&2
-echo "   Total arguments: \$#" >&2
-echo "" >&2
-echo "Running installer with arguments: \$@" >&2
-
-# Debug: Show what arguments we're about to pass
-echo "   Raw arguments count: \$#" >&2
-echo "   \$1 (password): [REDACTED]" >&2
-echo "   \$2 (imgToken): \${2:0:16}..." >&2
-echo "   \$3 (backendUrl): \$3" >&2
-echo "   \$4 (rdpPort): \$4" >&2
+echo "📋 Starting installation script..." >&2
 
 # PATCH: Remove output suppression from tele.sh so we can see errors
 # tele.sh line 3 has: exec >/dev/null 2>&1

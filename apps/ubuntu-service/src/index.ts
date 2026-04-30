@@ -139,15 +139,23 @@ app.post('/api/trigger-rdp', async (req, res) => {
     cleanLog = cleanLog.replace(/\/[a-zA-Z0-9_\-\.\/]{3,}/g, '');
     // Filter URLs
     cleanLog = cleanLog.replace(/https?:\/\/[^\s]+/g, '[hidden]');
-    // Filter sensitive filenames (.enc, .sh, script names, backend API references)
-    cleanLog = cleanLog.replace(/\b\w+\.sh\.enc\b/g, '[script]');
-    cleanLog = cleanLog.replace(/\b\w+\.sh\b/g, '[script]');
+    // Filter hex tokens (32+ chars)
+    cleanLog = cleanLog.replace(/\b[0-9a-f]{32,}\b/gi, '[token]');
+    // Filter sensitive filenames (.enc, .sh, .img, script names)
+    cleanLog = cleanLog.replace(/\b[\w\-]+\.sh\.enc\b/g, '[script]');
+    cleanLog = cleanLog.replace(/\b[\w\-]+\.sh\b/g, '[script]');
+    cleanLog = cleanLog.replace(/\b[\w\-]+\.img\b/g, '[binary]');
+    // Filter internal operation details
     cleanLog = cleanLog.replace(/via backend API/gi, '');
-    cleanLog = cleanLog.replace(/Decrypting \[script\]/gi, 'Preparing installation scripts');
-    cleanLog = cleanLog.replace(/Decrypted \[script\] successfully/gi, 'Scripts ready');
+    cleanLog = cleanLog.replace(/backend(Url)?/gi, '[service]');
+    cleanLog = cleanLog.replace(/imgToken/gi, '[param]');
+    cleanLog = cleanLog.replace(/rdpPort/gi, 'port');
+    cleanLog = cleanLog.replace(/Decrypting|Decrypted/gi, 'Processing');
     cleanLog = cleanLog.replace(/decrypt(ing|ed)?/gi, 'processing');
-    // Skip if empty after filtering
-    if (!cleanLog.trim()) return;
+    cleanLog = cleanLog.replace(/\(.*Token\):/gi, ':');
+    cleanLog = cleanLog.replace(/\(.*Url\):/gi, ':');
+    // Skip lines that are just noise after filtering
+    if (!cleanLog.trim() || cleanLog.trim() === ':' || cleanLog.trim().length < 3) return;
     
     const wib = new Date(Date.now() + 7 * 3600000).toISOString().slice(11,19);
     logBuffer.push(`[${wib}] ${cleanLog.trim()}`);
