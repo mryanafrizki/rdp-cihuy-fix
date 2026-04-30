@@ -52,39 +52,5 @@ export async function PUT(request: Request) {
   }
   
   // Email changes are not allowed via profile update (requires re-verification)
-  // Only non-sensitive fields can be updated here
   return NextResponse.json({ success: false, error: 'No valid fields to update' }, { status: 400 })
-
-  // Kept for future use if needed with re-verification flow
-  try {
-    const [data] = await db
-      .update(schema.users)
-      .set({})
-      .where(eq(schema.users.id, session.user.id))
-      .returning({
-        id: schema.users.id,
-        email: schema.users.email,
-        role: schema.users.role,
-        credit_balance: schema.users.creditBalance,
-        created_at: schema.users.createdAt,
-      })
-    
-    if (!data) {
-      return NextResponse.json({ success: false, error: 'User not found' }, { status: 404 })
-    }
-
-    // Log profile update (fire-and-forget)
-    logActivity({
-      action: 'profile_update',
-      userId: session.user.id,
-      email: session.user.email || 'unknown',
-      ...getRequestInfo(request),
-      details: { changes: updates },
-    }).catch(() => {})
-    
-    return NextResponse.json({ success: true, data })
-  } catch (error: any) {
-    notifyError('/api/profile', error.message)
-    return NextResponse.json({ success: false, error: 'Internal server error' }, { status: 500 })
-  }
 }
