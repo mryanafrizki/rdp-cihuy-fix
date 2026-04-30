@@ -207,9 +207,13 @@ export default function OsVersionsPage() {
                 style={{ background: 'var(--surface-3)', border: '1px solid var(--border-subtle)' }}
               >
                 <option value="desktop">Desktop</option>
+                <option value="windows11">Windows 11</option>
+                <option value="windows10">Windows 10</option>
+                <option value="legacy">Legacy (Win 7)</option>
                 <option value="uefi">UEFI</option>
                 <option value="server">Server</option>
                 <option value="lite">Lite</option>
+                <option value="docker">Docker</option>
               </select>
             </div>
             <button
@@ -311,12 +315,20 @@ export default function OsVersionsPage() {
                       <span
                         className="text-[11px] px-2 py-1 rounded-full font-medium"
                         style={{
-                          background: os.category === 'server' ? 'rgba(167,139,250,0.1)' :
-                            os.category === 'uefi' ? 'rgba(245,158,11,0.1)' :
-                            os.category === 'lite' ? 'rgba(34,197,94,0.1)' : 'rgba(59,130,246,0.1)',
-                          color: os.category === 'server' ? '#a78bfa' :
-                            os.category === 'uefi' ? '#f59e0b' :
-                            os.category === 'lite' ? '#22c55e' : '#60a5fa',
+                    background: os.category === 'server' ? 'rgba(167,139,250,0.1)' :
+                    os.category === 'uefi' ? 'rgba(245,158,11,0.1)' :
+                    os.category === 'lite' ? 'rgba(34,197,94,0.1)' :
+                    os.category === 'docker' ? 'rgba(6,182,212,0.1)' :
+                    os.category === 'windows11' ? 'rgba(59,130,246,0.1)' :
+                    os.category === 'windows10' ? 'rgba(99,102,241,0.1)' :
+                    os.category === 'legacy' ? 'rgba(156,163,175,0.1)' : 'rgba(59,130,246,0.1)',
+                    color: os.category === 'server' ? '#a78bfa' :
+                    os.category === 'uefi' ? '#f59e0b' :
+                    os.category === 'lite' ? '#22c55e' :
+                    os.category === 'docker' ? '#06b6d4' :
+                    os.category === 'windows11' ? '#3b82f6' :
+                    os.category === 'windows10' ? '#6366f1' :
+                    os.category === 'legacy' ? '#9ca3af' : '#60a5fa',
                         }}
                       >
                         {os.category}
