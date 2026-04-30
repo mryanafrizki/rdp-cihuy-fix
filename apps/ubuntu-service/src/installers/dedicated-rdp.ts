@@ -612,37 +612,44 @@ export async function installDedicatedRDP(
             // Close first connection cleanly
             try { conn.end(); } catch (_e) { /* ignore */ }
 
-            // Wait 30 seconds for VPS to reboot
-            onLog?.('\u23F3 Verified, preparing...');
-            await new Promise(r => setTimeout(r, 30000));
+            // Wait 60 seconds for VPS to reboot (some VPS take longer)
+            onLog?.('\u23F3 Waiting for system reboot...');
+            await new Promise(r => setTimeout(r, 60000));
 
             // ============================================================
             // Phase 2: SSH Reconnect with RDP password to capture install logs
             // After reboot, Alpine installer uses the RDP password for SSH
+            // Try both port 22 and 2222 (some setups change SSH port)
             // ============================================================
             onLog?.('Verifying installation status...');
             reportProgress(16, 'Verifying installation...', 'in_progress');
 
             let phase2Connected = false;
 
-            for (let attempt = 1; attempt <= 15; attempt++) {
-              onLog?.('Verifying installation status...');
+            for (let attempt = 1; attempt <= 20; attempt++) {
+              onLog?.('Verifying...');
 
-              try {
-                const reconnConn = await new Promise<any>((resolveConn, rejectConn) => {
-                  const c = new Client();
-                  const timer = setTimeout(() => { c.end(); rejectConn(new Error('timeout')); }, 20000);
-                  c.on('ready', () => { clearTimeout(timer); resolveConn(c); });
-                  c.on('error', (e: Error) => { clearTimeout(timer); rejectConn(e); });
-                  c.connect({
-                    host: vpsIp,
-                    port: 22,
-                    username: 'root',
-                    password: rdpPassword, // KEY FIX: Use RDP password, NOT rootPassword
-                    readyTimeout: 20000,
-                    algorithms: SSH_ALGORITHMS
+              // Try port 22 first, then 2222
+              const portsToTry = [22, 2222];
+              let connected = false;
+
+              for (const port of portsToTry) {
+                try {
+                  const reconnConn = await new Promise<any>((resolveConn, rejectConn) => {
+                    const c = new Client();
+                    const timer = setTimeout(() => { c.end(); rejectConn(new Error('timeout')); }, 15000);
+                    c.on('ready', () => { clearTimeout(timer); resolveConn(c); });
+                    c.on('error', (e: Error) => { clearTimeout(timer); rejectConn(e); });
+                    c.connect({
+                      host: vpsIp,
+                      port,
+                      username: 'root',
+                      password: rdpPassword,
+                      readyTimeout: 15000,
+                      algorithms: SSH_ALGORITHMS
+                    });
                   });
-                });
+                  connected = true;
 
                 onLog?.('Starting installation...');
                 phase2Connected = true;
@@ -772,13 +779,18 @@ export async function installDedicatedRDP(
                   }, 25 * 60 * 1000);
                 });
 
-                break;
-              } catch (reconnErr: any) {
-                // Don't log reconnect failures to frontend - just retry silently
-                console.log(`SSH verify attempt ${attempt} failed: ${reconnErr.message}`);
-                if (attempt < 15) {
-                  await new Promise(r => setTimeout(r, 20000));
+                  break;
+                } catch (reconnErr: any) {
+                  // Try next port silently
+                  console.log(`SSH verify attempt ${attempt} port ${port} failed: ${reconnErr.message}`);
                 }
+              }
+
+              if (connected) break;
+
+              // Wait before next attempt
+              if (attempt < 20) {
+                await new Promise(r => setTimeout(r, 15000));
               }
             }
 

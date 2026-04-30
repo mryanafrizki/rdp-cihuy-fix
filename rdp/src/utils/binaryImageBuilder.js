@@ -543,7 +543,8 @@ __ARCHIVE_BELOW__
             
             // Use tar with -C flag to specify directory (more reliable than chdir)
             // This avoids path resolution issues on Windows
-            const tarCommand = `tar --force-local -czf "${archivePathForTar}" -C "${archiveDirForTar}" .`;
+            const forceLocal = process.platform === 'win32' ? '' : '--force-local ';
+            const tarCommand = `tar ${forceLocal}-czf "${archivePathForTar}" -C "${archiveDirForTar}" .`;
             
             console.log(`   Command: ${tarCommand}`);
             
