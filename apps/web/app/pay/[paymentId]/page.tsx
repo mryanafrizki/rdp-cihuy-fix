@@ -1,6 +1,7 @@
 'use client'
 
 import { useState, useEffect, useRef, use } from 'react'
+import { useSearchParams } from 'next/navigation'
 import { motion, AnimatePresence } from 'framer-motion'
 import QRCode from 'qrcode'
 import { Copy, Check, Clock, CheckCircle2, XCircle, AlertTriangle } from 'lucide-react'
@@ -26,6 +27,8 @@ function RedirectCountdown({ to, seconds }: { to: string, seconds: number }) {
 
 export default function PaymentPage({ params }: { params: Promise<{ paymentId: string }> }) {
   const { paymentId } = use(params)
+  const searchParams = useSearchParams()
+  const totalFromQuery = searchParams.get('total') ? Number(searchParams.get('total')) : null
   const [payment, setPayment] = useState<any>(null)
   const [notFound, setNotFound] = useState(false)
   const [qrDataUrl, setQrDataUrl] = useState<string | null>(null)
@@ -335,11 +338,17 @@ export default function PaymentPage({ params }: { params: Promise<{ paymentId: s
             Total harus dibayar
           </div>
           <div className="text-4xl font-bold text-white mt-2 tracking-tight">
-            Rp {Number(payment.total_charge || payment.amount || 0).toLocaleString('id-ID')}
+            Rp {Number(totalFromQuery || payment.total_charge || payment.amount || 0).toLocaleString('id-ID')}
           </div>
-          <div className="text-xs mt-2" style={{ color: 'var(--text-muted, #55566a)' }}>
-            Sudah termasuk fee + kode unik
-          </div>
+          {(totalFromQuery || payment.total_charge) && Number(payment.amount) !== Number(totalFromQuery || payment.total_charge) ? (
+            <div className="text-xs mt-2" style={{ color: 'var(--text-muted, #55566a)' }}>
+              Nominal topup Rp {Number(payment.amount || 0).toLocaleString('id-ID')} + fee &amp; kode unik
+            </div>
+          ) : (
+            <div className="text-xs mt-2" style={{ color: 'var(--text-muted, #55566a)' }}>
+              Sudah termasuk fee + kode unik
+            </div>
+          )}
         </div>
 
         {/* Timer */}

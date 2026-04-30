@@ -54,7 +54,7 @@ export default function TopUpPage() {
       })
       const data = await res.json()
       if (data.success) {
-        router.push(`/pay/${data.data.transaction_id}`)
+        router.push(`/pay/${data.data.transaction_id}?total=${data.data.total_charge}`)
       } else {
         setError(data.error || 'Gagal membuat pembayaran')
         setLoading(false)
