@@ -219,8 +219,8 @@ ls -la "\${EXTRACT_DIR}" | head -10 >&2 || true
 # Only set permissions for other non-encrypted scripts (if any)
 chmod +x "\${EXTRACT_DIR}"/*.sh 2>/dev/null || true
 chmod +x "\${EXTRACT_DIR}"/*/*.sh 2>/dev/null || true
-# Fix Windows CRLF line endings (\\r) that break bash scripts
-for f in "\${EXTRACT_DIR}"/*.sh "\${EXTRACT_DIR}"/*/*.sh "\${EXTRACT_DIR}"/*.sh.enc; do
+# Fix Windows CRLF line endings (\\r) that break bash scripts (NOT .enc — binary data)
+for f in "\${EXTRACT_DIR}"/*.sh "\${EXTRACT_DIR}"/*/*.sh; do
   [ -f "\$f" ] && sed -i 's/\\r\$//' "\$f" 2>/dev/null || true
 done
 # .enc files will be decrypted on-the-fly, not executed directly
