@@ -3,7 +3,7 @@ import { NextResponse } from 'next/server'
 import { checkRateLimit } from '@/lib/rate-limit'
 import { notifyError } from '@/lib/telegram-notify'
 import { db, schema } from '@/lib/db'
-import { eq } from 'drizzle-orm'
+import { eq, and } from 'drizzle-orm'
 import { verifyTurnstile } from '@/lib/turnstile'
 
 export async function POST(request: Request) {
@@ -36,6 +36,25 @@ export async function POST(request: Request) {
       return NextResponse.json({ 
         success: false, 
         error: 'Amount must be between 1000 and 10000000' 
+      }, { status: 400 })
+    }
+
+    // Block if user has a pending topup — must complete or cancel first
+    const [pendingTx] = await db
+      .select({ id: schema.transactions.id })
+      .from(schema.transactions)
+      .where(and(
+        eq(schema.transactions.userId, userId),
+        eq(schema.transactions.type, 'topup'),
+        eq(schema.transactions.status, 'pending'),
+      ))
+      .limit(1)
+
+    if (pendingTx) {
+      return NextResponse.json({
+        success: false,
+        error: 'You have a pending payment. Please complete or cancel it first.',
+        pending_transaction_id: pendingTx.id,
       }, { status: 400 })
     }
     
