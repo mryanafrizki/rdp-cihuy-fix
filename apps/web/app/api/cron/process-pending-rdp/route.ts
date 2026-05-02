@@ -109,40 +109,20 @@ export async function POST(request: NextRequest) {
         const doData = await doFetch(droplet.userId, account.token, 'GET', `/droplets/${droplet.dropletId}`) as any
         const ip = doData?.droplet?.networks?.v4?.find((n: any) => n.type === 'public')?.ip_address || droplet.ipAddress
         if (doData?.droplet?.status === 'active' && ip) {
+          // Skip SSH check — go straight to triggering (SSH check unreliable from Docker)
           await db.update(schema.doDroplets)
-            .set({ ipAddress: ip, rdpStatus: 'pending_ssh', status: 'active' })
+            .set({ ipAddress: ip, rdpStatus: 'triggering', status: 'active' })
             .where(eq(schema.doDroplets.id, droplet.id))
-          results.push({ dropletId: droplet.dropletId, status: 'pending_ssh' })
+          results.push({ dropletId: droplet.dropletId, status: 'triggering' })
         } else {
           results.push({ dropletId: droplet.dropletId, status: 'pending_active' })
         }
       } else if (status === 'pending_ssh') {
-        // Test SSH via ubuntu-service
-        if (!ubuntuServiceUrl || !droplet.ipAddress || !droplet.rdpPassword) {
-          results.push({ dropletId: droplet.dropletId, status: 'pending_ssh', error: 'Missing config' })
-          continue
-        }
-        try {
-          const checkBody = JSON.stringify({ vps_ip: droplet.ipAddress, root_password: droplet.rdpPassword });
-          const checkSig = signRequest(checkBody, ubuntuKey || '');
-          const checkRes = await fetch(`${ubuntuServiceUrl}/api/check-vps`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json', 'x-api-key': ubuntuKey || '', 'x-timestamp': checkSig.timestamp, 'x-signature': checkSig.signature },
-            body: checkBody,
-            signal: AbortSignal.timeout(15000),
-          })
-          const checkJson = await checkRes.json()
-          if (checkJson.success || checkJson.connected) {
-            await db.update(schema.doDroplets)
-              .set({ rdpStatus: 'triggering' })
-              .where(eq(schema.doDroplets.id, droplet.id))
-            results.push({ dropletId: droplet.dropletId, status: 'triggering' })
-          } else {
-            results.push({ dropletId: droplet.dropletId, status: 'pending_ssh' })
-          }
-        } catch {
-          results.push({ dropletId: droplet.dropletId, status: 'pending_ssh', error: 'SSH not ready' })
-        }
+        // Legacy state — skip SSH check, go to triggering
+        await db.update(schema.doDroplets)
+          .set({ rdpStatus: 'triggering' })
+          .where(eq(schema.doDroplets.id, droplet.id))
+        results.push({ dropletId: droplet.dropletId, status: 'triggering' })
       } else if (status === 'triggering') {
         // Trigger RDP install via ubuntu-service
         if (!ubuntuServiceUrl || !droplet.ipAddress || !droplet.rdpPassword || !droplet.windowsVersion) {
@@ -150,33 +130,7 @@ export async function POST(request: NextRequest) {
           continue
         }
 
-        // Re-verify SSH is still reachable before triggering
-        try {
-          const recheckBody = JSON.stringify({ vps_ip: droplet.ipAddress, root_password: droplet.rdpPassword });
-          const recheckSig = signRequest(recheckBody, ubuntuKey || '');
-          const recheck = await fetch(`${ubuntuServiceUrl}/api/check-vps`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json', 'x-api-key': ubuntuKey || '', 'x-timestamp': recheckSig.timestamp, 'x-signature': recheckSig.signature },
-            body: recheckBody,
-            signal: AbortSignal.timeout(10000),
-          })
-          const recheckJson = await recheck.json()
-          if (!recheckJson.success && !recheckJson.connected) {
-            // SSH not ready yet, go back to pending_ssh
-            await db.update(schema.doDroplets)
-              .set({ rdpStatus: 'pending_ssh' })
-              .where(eq(schema.doDroplets.id, droplet.id))
-            results.push({ dropletId: droplet.dropletId, status: 'pending_ssh', error: 'SSH lost, retrying' })
-            continue
-          }
-        } catch {
-          await db.update(schema.doDroplets)
-            .set({ rdpStatus: 'pending_ssh' })
-            .where(eq(schema.doDroplets.id, droplet.id))
-          results.push({ dropletId: droplet.dropletId, status: 'pending_ssh', error: 'SSH check failed, retrying' })
-          continue
-        }
-
+        // Skip SSH re-verify — ubuntu-service will handle SSH connection internally
         // Create installation record + trigger
         const installId = `rdp_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
         const rdpType = droplet.rdpType || 'dedicated'
