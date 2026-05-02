@@ -704,76 +704,24 @@ export async function installDedicatedRDP(
             }
 
             // ============================================================
-            // STEP 4: Wait 20s → SSH to Windows → inject batch → reboot
+            // STEP 4: Wait for Windows to boot + SetupComplete.cmd to run
+            // (windows-change-rdp-port.bat auto-runs via SetupComplete.cmd
+            //  which was injected by trans.sh during OS installation)
+            // After SetupComplete: RDP on port 22, SSH on 2222, PC renamed, then reboot
             // ============================================================
-            onLog?.('⏳ Waiting for Windows...');
-            await new Promise(r => setTimeout(r, 20000));
+            onLog?.('⏳ Windows is booting + running setup...');
+            reportProgress(87, 'Windows setup running...', 'in_progress');
+            await new Promise(r => setTimeout(r, 30000));
 
-            // Try SSH to Windows as administrator
-            let injected = false;
-            for (let attempt = 1; attempt <= 10; attempt++) {
-              try {
-                const winConn = await new Promise<any>((resolveConn, rejectConn) => {
-                  const c = new Client();
-                  const timer = setTimeout(() => { c.end(); rejectConn(new Error('timeout')); }, 15000);
-                  c.on('ready', () => { clearTimeout(timer); resolveConn(c); });
-                  c.on('error', (e: Error) => { clearTimeout(timer); rejectConn(e); });
-                  c.connect({
-                    host: vpsIp,
-                    port: RDP_CHECK_PORT,
-                    username: 'administrator',
-                    password: rdpPassword,
-                    readyTimeout: 15000,
-                    algorithms: SSH_ALGORITHMS
-                  });
-                });
-
-                onLog?.('🔧 Running post-install setup...');
-                reportProgress(90, 'Post-install setup...', 'in_progress');
-
-                // Run windows-change-rdp-port.bat commands
-                await new Promise<void>((resolveInject) => {
-                  const cmd = [
-                    'powershell -NoProfile -ExecutionPolicy Bypass -Command "try{Rename-Computer -NewName COBAIN-DEV -Force}catch{}"',
-                    'reg add "HKLM\\SYSTEM\\CurrentControlSet\\Control\\Terminal Server\\WinStations\\RDP-Tcp" /v PortNumber /t REG_DWORD /d 22 /f',
-                    'netsh advfirewall firewall add rule name="RDP22" dir=in action=allow protocol=tcp localport=22',
-                    'powercfg -change -standby-timeout-ac 0',
-                    'net accounts /lockoutthreshold:0',
-                    'shutdown /r /t 5 /c "Setup complete"',
-                  ].join(' & ');
-
-                  winConn.exec(`cmd /c "${cmd}"`, (err: any, stream: any) => {
-                    if (err) { winConn.end(); resolveInject(); return; }
-                    stream.on('close', () => {
-                      injected = true;
-                      onLog?.('✅ Post-install done — rebooting...');
-                      winConn.end();
-                      resolveInject();
-                    });
-                    setTimeout(() => { try { winConn.end(); } catch(_){} resolveInject(); }, 30000);
-                  });
-                });
-
-                if (injected) break;
-              } catch {
-                if (attempt < 10) await new Promise(r => setTimeout(r, 15000));
-              }
-            }
-
-            // ============================================================
-            // STEP 5: Wait for final reboot → check port → DONE
-            // ============================================================
-            if (injected) {
-              onLog?.('⏳ Rebooting with new settings...');
-              reportProgress(95, 'Rebooting...', 'in_progress');
-              await new Promise(r => setTimeout(r, 30000));
-            }
-
-            // Check port open
+            // Check port open — after SetupComplete runs and reboots, port 22 = RDP
             let rdpReady = false;
-            for (let attempt = 1; attempt <= 15; attempt++) {
+            for (let attempt = 1; attempt <= 30; attempt++) {
               const isOpen = await checkPort(vpsIp, RDP_CHECK_PORT, 8000);
               if (isOpen) { rdpReady = true; break; }
+              if (attempt % 5 === 0) {
+                onLog?.(`⏳ Waiting for RDP... (${attempt * 10}s)`);
+              }
+              reportProgress(Math.min(87 + attempt, 95), 'Waiting for RDP...', 'in_progress');
               await new Promise(r => setTimeout(r, 10000));
             }
 
