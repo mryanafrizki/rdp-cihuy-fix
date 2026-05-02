@@ -627,7 +627,9 @@ export async function installDedicatedRDP(
             await new Promise(r => setTimeout(r, 30000));
 
             let reconnConn: any = null;
+            onLog?.('🔄 Trying to connect to installer...');
             for (let attempt = 1; attempt <= 20; attempt++) {
+              console.log(`[SSH-RECONNECT] Attempt ${attempt}/20 to ${vpsIp}:22`);
               try {
                 reconnConn = await new Promise<any>((resolveConn, rejectConn) => {
                   const c = new Client();
@@ -644,8 +646,9 @@ export async function installDedicatedRDP(
                   });
                 });
                 break; // connected
-              } catch {
+              } catch (reconnErr: any) {
                 reconnConn = null;
+                console.log(`[SSH-RECONNECT] Attempt ${attempt} FAILED: ${reconnErr.message}`);
                 if (attempt < 20) await new Promise(r => setTimeout(r, 20000));
               }
             }
