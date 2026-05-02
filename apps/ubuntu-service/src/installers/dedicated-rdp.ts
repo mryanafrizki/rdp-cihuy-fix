@@ -633,9 +633,11 @@ export async function installDedicatedRDP(
 
             let phase2Connected = false;
 
-            // Try SSH reconnect — 10 attempts, 15s each = ~2.5 min
-            for (let attempt = 1; attempt <= 10; attempt++) {
+            // Try SSH reconnect — 8 attempts, 10s each = ~80s total
+            // If fails, fallback to time-based estimation (don't block)
+            for (let attempt = 1; attempt <= 8; attempt++) {
               if (attempt === 1) onLog?.('🔄 Connecting to installer...');
+              if (attempt === 4) onLog?.('⏳ Waiting for installer to be ready...');
 
               try {
                 const reconnConn = await new Promise<any>((resolveConn, rejectConn) => {
@@ -745,7 +747,7 @@ export async function installDedicatedRDP(
                 break; // Exit reconnect loop
               } catch (reconnErr: any) {
                 console.log(`SSH reconnect attempt ${attempt} failed: ${reconnErr.message}`);
-                if (attempt < 10) await new Promise(r => setTimeout(r, 15000));
+                if (attempt < 8) await new Promise(r => setTimeout(r, 10000));
               }
             }
 
