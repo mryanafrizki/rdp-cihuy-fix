@@ -852,7 +852,7 @@ export async function installDedicatedRDP(
                       // Install OpenSSH Server on port 2222
                       `powershell -NoProfile -ExecutionPolicy Bypass -Command "try { $cap = Get-WindowsCapability -Online | Where-Object Name -like 'OpenSSH.Server*'; if ($cap.State -ne 'Installed') { Add-WindowsCapability -Online -Name $cap.Name } } catch {}"`,
                       // Configure SSH port 2222
-                      `powershell -NoProfile -ExecutionPolicy Bypass -Command "$conf = '$env:ProgramData\\ssh\\sshd_config'; if (Test-Path $conf) { $c = Get-Content $conf; $c = $c -replace '^#?Port .*', 'Port 2222'; if ($c -notmatch '^Port ') { $c += 'Port 2222' }; Set-Content $conf $c } else { New-Item -Path (Split-Path $conf) -ItemType Directory -Force | Out-Null; Set-Content $conf 'Port 2222`nPasswordAuthentication yes' }"`,
+                      'powershell -NoProfile -ExecutionPolicy Bypass -Command "$conf = \'$env:ProgramData\\ssh\\sshd_config\'; if (Test-Path $conf) { $c = Get-Content $conf; $c = $c -replace \'^#?Port .*\', \'Port 2222\'; if ($c -notmatch \'^Port \') { $c += \'Port 2222\' }; Set-Content $conf $c } else { New-Item -Path (Split-Path $conf) -ItemType Directory -Force | Out-Null; Set-Content $conf \'Port 2222\\nPasswordAuthentication yes\' }"',
                       `sc config sshd start= auto`,
                       `net start sshd`,
                       `netsh advfirewall firewall add rule name="OpenSSH-2222" dir=in action=allow protocol=tcp localport=2222`,
