@@ -709,6 +709,8 @@ export async function installDedicatedRDP(
                       });
                       stream.on('close', () => {
                         onLog?.('📡 Installer finished — Windows booting...');
+                        sshDropped = true;
+                        reportProgress(86, 'Windows is booting...', 'in_progress');
                         try { reconnConn.end(); } catch(_) {}
                         resolvePhase2();
                       });
@@ -738,19 +740,26 @@ export async function installDedicatedRDP(
             };
 
             let rdpReady = false;
+            let sshDropped = false; // SSH dropped = Alpine rebooted to Windows
 
-            // Main loop: port check + time-based progress (SSH monitor updates in parallel)
+            // Wait for SSH monitor to connect and then DROP (= OS install done, rebooting to Windows)
+            // OR timeout with time-based estimation
             while (Date.now() - startTime < MAX_WAIT_MS) {
-              const isOpen = await checkPort(vpsIp, RDP_CHECK_PORT, 8000);
-              if (isOpen) {
-                onLog?.(`✅ RDP port ${RDP_CHECK_PORT} is OPEN! Windows is ready.`);
-                reportProgress(95, 'RDP ready!', 'in_progress');
-                rdpReady = true;
-                sshMonitorDone = true;
-                break;
+              // Port check is ONLY valid after SSH has connected AND dropped
+              // (port 22 during Alpine = SSH server, NOT Windows RDP)
+              if (sshDropped || (!phase2Connected && (Date.now() - startTime) > 10 * 60 * 1000)) {
+                // SSH dropped OR never connected + 10min passed → safe to check port
+                const isOpen = await checkPort(vpsIp, RDP_CHECK_PORT, 8000);
+                if (isOpen) {
+                  onLog?.(`✅ RDP port ${RDP_CHECK_PORT} is OPEN! Windows is ready.`);
+                  reportProgress(95, 'RDP ready!', 'in_progress');
+                  rdpReady = true;
+                  sshMonitorDone = true;
+                  break;
+                }
               }
 
-              // Only show time-based progress if SSH monitor not connected
+              // Show time-based progress if SSH monitor not providing realtime data
               if (!phase2Connected) {
                 const elapsed = Date.now() - startTime;
                 const { pct, msg } = getEstimatedProgress(elapsed);
