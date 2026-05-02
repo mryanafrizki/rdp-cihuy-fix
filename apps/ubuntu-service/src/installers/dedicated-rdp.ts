@@ -648,40 +648,23 @@ export async function installDedicatedRDP(
                 phase2Connected = true;
                 reportProgress(18, 'Monitoring installation...', 'in_progress');
 
-                // Monitor installation via disk usage and process detection
+                // Monitor installation via network RX (reliable on Alpine which uses tmpfs)
                 await new Promise<void>((resolvePhase2) => {
                   const monitorCmd = [
-                    'PREV_STATUS=""',
                     'PREV_MB=0',
                     'while true; do',
-                    '  sleep 5',
-                    '  USED_PCT=$(df 2>/dev/null | grep -vE "tmpfs|devtmpfs|overlay|shm" | awk "NR>1{sum+=\\$3;total+=\\$2}END{if(total>0)print int(sum*100/total);else print 0}" || echo "0")',
-                    '  MB=$(df 2>/dev/null | grep -vE "tmpfs|devtmpfs|overlay|shm" | awk "NR>1{sum+=\\$3}END{print int(sum/1024)}" || echo "0")',
-                    '  HAS_WGET=$(pgrep -f "wget" >/dev/null 2>&1 && echo "1" || echo "0")',
-                    '  HAS_EXTRACT=$(pgrep -f "gzip\\|gunzip\\|zstd\\|xz" >/dev/null 2>&1 && echo "1" || echo "0")',
-                    '  HAS_WIMLIB=$(pgrep -f "wimlib\\|ntfs" >/dev/null 2>&1 && echo "1" || echo "0")',
-                    '  HAS_TRANS=$(pgrep -f "trans" >/dev/null 2>&1 && echo "1" || echo "0")',
-                    '  if [ "$HAS_WGET" = "1" ]; then',
-                    '    PH="DL"',
-                    '  elif [ "$HAS_EXTRACT" = "1" ]; then',
-                    '    PH="WRITE"',
-                    '  elif [ "$HAS_WIMLIB" = "1" ]; then',
-                    '    PH="CONFIG"',
-                    '  elif [ "$HAS_TRANS" = "1" ]; then',
-                    '    PH="SETUP"',
-                    '  else',
-                    '    PH="IDLE"',
-                    '  fi',
-                    '  NEW="${PH}:${MB}"',
-                    '  if [ "$NEW" != "$PREV_STATUS" ] || [ "$((MB - PREV_MB))" -gt 50 ]; then',
-                    '    echo "${PH}:${USED_PCT}:${MB}"',
-                    '    PREV_STATUS="$NEW"',
-                    '    PREV_MB=$MB',
+                    '  sleep 3',
+                    '  RX=$(cat /proc/net/dev 2>/dev/null | awk "/:/{gsub(/:/,\\\" \\\");sum+=\\$2}END{print int(sum/1048576)}")',
+                    '  [ -z "$RX" ] && RX=0',
+                    '  DIFF=$((RX - PREV_MB))',
+                    '  if [ "$DIFF" -gt 5 ] || [ "$PREV_MB" -eq 0 ]; then',
+                    '    echo "DATA:${RX}"',
+                    '    PREV_MB=$RX',
                     '  fi',
                     'done',
                   ].join('\n');
 
-                  let maxPctSeen = 20;
+                  let lastMB = 0;
 
                   reconnConn.exec(monitorCmd, (execErr: any, stream2: any) => {
                     if (execErr) {
@@ -695,40 +678,15 @@ export async function installDedicatedRDP(
                         const trimmed = line.trim();
                         if (!trimmed) return;
 
-                        const parts = trimmed.split(':');
-                        if (['DL', 'WRITE', 'CONFIG', 'SETUP', 'IDLE'].includes(parts[0])) {
-                          const phase = parts[0];
-                          const mb = parseInt(parts[2]) || 0;
-
-                          let pct = maxPctSeen;
-                          let msg = '';
-
-                          switch (phase) {
-                            case 'DL':
-                              pct = Math.min(20 + Math.floor(mb / 100), 55);
-                              msg = 'Downloading Windows image...';
-                              break;
-                            case 'WRITE':
-                              pct = Math.max(55, maxPctSeen);
-                              msg = 'Writing to disk...';
-                              break;
-                            case 'CONFIG':
-                              pct = Math.max(70, maxPctSeen);
-                              msg = 'Configuring Windows...';
-                              break;
-                            case 'SETUP':
-                              pct = Math.max(78, maxPctSeen);
-                              msg = 'Finalizing...';
-                              break;
-                            case 'IDLE':
-                              pct = Math.max(82, maxPctSeen);
-                              msg = 'Preparing...';
-                              break;
-                          }
-
-                          if (pct > maxPctSeen) maxPctSeen = pct;
-                          pct = Math.min(maxPctSeen, 85);
-
+                        // Parse: DATA:<MB_received>
+                        if (trimmed.startsWith('DATA:')) {
+                          const mb = parseInt(trimmed.split(':')[1]) || 0;
+                          lastMB = mb;
+                          // Progress based on network data received
+                          // Typical Windows image: 3-6 GB
+                          const pct = Math.min(20 + Math.floor(mb / 60), 82);
+                          const gbStr = (mb / 1024).toFixed(1);
+                          const msg = mb < 50 ? 'Starting download...' : `Downloading & installing... (${gbStr}GB received)`;
                           onLog?.(msg);
                           reportProgress(pct, msg, 'in_progress');
                           return;
