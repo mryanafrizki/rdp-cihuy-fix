@@ -58,8 +58,8 @@ export async function POST(request: NextRequest) {
     const createdAt = droplet.createdAt ? new Date(droplet.createdAt).getTime() : Date.now()
     const ageMinutes = (Date.now() - createdAt) / 60000
 
-    // Timeout: if pending for >20 minutes, mark failed + refund
-    if (ageMinutes > 20 && status !== 'triggered') {
+    // Timeout: if pending for >30 minutes, mark failed + refund
+    if (ageMinutes > 30 && status !== 'triggered') {
       await db.update(schema.doDroplets)
         .set({ rdpStatus: 'failed', pendingRdp: false })
         .where(eq(schema.doDroplets.id, droplet.id))
