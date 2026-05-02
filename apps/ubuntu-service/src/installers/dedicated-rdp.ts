@@ -770,7 +770,8 @@ export async function installDedicatedRDP(
                 }
               }
 
-              await new Promise(r => setTimeout(r, 15000));
+              // Check faster after SSH dropped (Windows booting)
+              await new Promise(r => setTimeout(r, sshDropped ? 5000 : 15000));
             }
             sshMonitorDone = true;
 
@@ -779,9 +780,9 @@ export async function installDedicatedRDP(
               // Phase 4: Post-install — SSH to Windows, run setup batch file
               // Changes: RDP port → 22, PC name → COBAIN-DEV, install OpenSSH on 2222
               // ============================================================
-              onLog?.('⏳ Waiting 45s for Windows services to initialize...');
+              onLog?.('⏳ Waiting for Windows services...');
               reportProgress(96, 'Running post-install setup...', 'in_progress');
-              await new Promise(r => setTimeout(r, 45000));
+              await new Promise(r => setTimeout(r, 15000));
 
               let postInstallDone = false;
               for (let attempt = 1; attempt <= 5; attempt++) {
