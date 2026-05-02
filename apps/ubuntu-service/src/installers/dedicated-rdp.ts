@@ -643,8 +643,8 @@ export async function installDedicatedRDP(
 
             // Background: try SSH reconnect for realtime monitoring (non-blocking)
             const trySSHMonitor = async () => {
-              // Wait 60s before first attempt (Alpine needs time to boot)
-              await new Promise(r => setTimeout(r, 60000));
+              // Wait 15s before first attempt
+              await new Promise(r => setTimeout(r, 15000));
 
               for (let attempt = 1; attempt <= 15; attempt++) {
                 if (sshMonitorDone) return;
