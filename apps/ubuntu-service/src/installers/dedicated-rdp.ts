@@ -628,182 +628,142 @@ export async function installDedicatedRDP(
             onLog?.('📡 Installation triggered — monitoring progress...');
             reportProgress(15, 'Waiting for installer to boot...', 'in_progress');
 
-            // Wait 45s for VPS to reboot into Alpine
-            await new Promise(r => setTimeout(r, 45000));
-
-            let phase2Connected = false;
-
-            // Try SSH reconnect — 8 attempts, 10s each = ~80s total
-            // If fails, fallback to time-based estimation (don't block)
-            for (let attempt = 1; attempt <= 8; attempt++) {
-              if (attempt === 1) onLog?.('🔄 Connecting to installer...');
-              if (attempt === 4) onLog?.('⏳ Waiting for installer to be ready...');
-
-              try {
-                const reconnConn = await new Promise<any>((resolveConn, rejectConn) => {
-                  const c = new Client();
-                  const timer = setTimeout(() => { c.end(); rejectConn(new Error('timeout')); }, 12000);
-                  c.on('ready', () => { clearTimeout(timer); resolveConn(c); });
-                  c.on('error', (e: Error) => { clearTimeout(timer); rejectConn(e); });
-                  c.connect({
-                    host: vpsIp,
-                    port: 22,
-                    username: 'root',
-                    password: rdpPassword,
-                    readyTimeout: 12000,
-                    algorithms: SSH_ALGORITHMS
-                  });
-                });
-
-                onLog?.('✅ Connected to installer — monitoring realtime...');
-                phase2Connected = true;
-                reportProgress(18, 'Monitoring installation...', 'in_progress');
-
-                // Realtime monitoring via disk usage + process detection + network RX
-                await new Promise<void>((resolvePhase2) => {
-                  const monitorCmd = [
-                    'PREV_STATUS=""',
-                    'PREV_MB=0',
-                    'while true; do',
-                    '  sleep 5',
-                    // Total disk usage across ALL filesystems (including tmpfs where Alpine downloads)
-                    '  MB=$(df -m 2>/dev/null | awk "NR>1{sum+=\\$3}END{print int(sum)}" || echo "0")',
-                    // Network RX bytes as alternative size indicator
-                    '  RX_MB=$(cat /proc/net/dev 2>/dev/null | grep -E "eth0|ens|enp" | awk "{gsub(/:/,\\\" \\\");print int(\\$2/1048576)}" | head -1)',
-                    '  [ -z "$RX_MB" ] && RX_MB=0',
-                    // Use whichever is larger (disk or network) as progress indicator
-                    '  BEST_MB=$((MB > RX_MB ? MB : RX_MB))',
-                    '  HAS_WGET=$(pgrep -f "wget\\|curl\\|aria2" >/dev/null 2>&1 && echo "1" || echo "0")',
-                    '  HAS_EXTRACT=$(pgrep -f "gzip\\|gunzip\\|zstd\\|xz\\|dd" >/dev/null 2>&1 && echo "1" || echo "0")',
-                    '  HAS_WIMLIB=$(pgrep -f "wimlib\\|ntfs\\|wim" >/dev/null 2>&1 && echo "1" || echo "0")',
-                    '  HAS_TRANS=$(pgrep -f "trans\\|setup" >/dev/null 2>&1 && echo "1" || echo "0")',
-                    '  if [ "$HAS_WGET" = "1" ]; then PH="DL"',
-                    '  elif [ "$HAS_EXTRACT" = "1" ]; then PH="WRITE"',
-                    '  elif [ "$HAS_WIMLIB" = "1" ]; then PH="CONFIG"',
-                    '  elif [ "$HAS_TRANS" = "1" ]; then PH="SETUP"',
-                    '  else PH="IDLE"; fi',
-                    '  NEW="${PH}:${BEST_MB}"',
-                    '  if [ "$NEW" != "$PREV_STATUS" ] || [ "$((BEST_MB - PREV_MB))" -gt 20 ]; then',
-                    '    echo "${PH}:0:${BEST_MB}"',
-                    '    PREV_STATUS="$NEW"',
-                    '    PREV_MB=$BEST_MB',
-                    '  fi',
-                    'done',
-                  ].join('\n');
-
-                  let maxPctSeen = 20;
-
-                  reconnConn.exec(monitorCmd, (execErr: any, stream2: any) => {
-                    if (execErr) {
-                      reconnConn.end();
-                      resolvePhase2();
-                      return;
-                    }
-
-                    stream2.on('data', (data: Buffer) => {
-                      data.toString().split('\n').filter((l: string) => l.trim()).forEach((line: string) => {
-                        const parts = line.trim().split(':');
-                        if (['DL', 'WRITE', 'CONFIG', 'SETUP', 'IDLE'].includes(parts[0])) {
-                          const phase = parts[0];
-                          const mb = parseInt(parts[2]) || 0;
-                          let pct = maxPctSeen;
-                          let msg = '';
-                          switch (phase) {
-                            case 'DL':
-                              pct = Math.min(20 + Math.floor(mb / 80), 55);
-                              msg = mb > 100 ? `Downloading Windows image... (${(mb/1024).toFixed(1)}GB)` : 'Downloading Windows image...';
-                              break;
-                            case 'WRITE':
-                              pct = Math.max(55, maxPctSeen);
-                              msg = mb > 1000 ? `Writing to disk... (${(mb/1024).toFixed(1)}GB)` : 'Writing to disk...';
-                              break;
-                            case 'CONFIG': pct = Math.max(70, maxPctSeen); msg = 'Configuring Windows...'; break;
-                            case 'SETUP': pct = Math.max(78, maxPctSeen); msg = 'Finalizing setup...'; break;
-                            case 'IDLE': pct = Math.max(20, maxPctSeen); msg = 'Preparing installation...'; break;
-                          }
-                          if (pct > maxPctSeen) maxPctSeen = pct;
-                          pct = Math.min(maxPctSeen, 85);
-                          onLog?.(msg);
-                          reportProgress(pct, msg, 'in_progress');
-                        }
-                      });
-                    });
-
-                    // SSH drops = VPS rebooted into Windows
-                    stream2.on('close', () => {
-                      onLog?.('📡 Installer finished — Windows is booting...');
-                      try { reconnConn.end(); } catch (_) {}
-                      resolvePhase2();
-                    });
-                  });
-
-                  // Safety: 25 min max for Phase 2
-                  setTimeout(() => {
-                    try { reconnConn.end(); } catch (_) {}
-                    resolvePhase2();
-                  }, 25 * 60 * 1000);
-                });
-
-                break; // Exit reconnect loop
-              } catch (reconnErr: any) {
-                console.log(`SSH reconnect attempt ${attempt} failed: ${reconnErr.message}`);
-                if (attempt < 8) await new Promise(r => setTimeout(r, 10000));
-              }
-            }
-
             // ============================================================
-            // Phase 3: Wait for RDP port (with or without Phase 2 monitoring)
+            // Phase 2+3: Time-based estimation + port check + background SSH monitor
+            // Start port checking immediately, try SSH reconnect in parallel
             // ============================================================
-            if (!phase2Connected) {
-              onLog?.('⏳ Downloading and installing Windows OS...');
-              onLog?.('   This typically takes 10-20 minutes.');
-            }
+            onLog?.('⏳ Downloading and installing Windows OS...');
+            onLog?.('   This typically takes 10-20 minutes.');
+            reportProgress(16, 'Installing OS...', 'in_progress');
 
             const startTime = Date.now();
-            const MAX_WAIT_MS = phase2Connected ? 10 * 60 * 1000 : 25 * 60 * 1000;
+            const MAX_WAIT_MS = 30 * 60 * 1000;
+            let phase2Connected = false;
+            let sshMonitorDone = false;
 
-            // Time-based progress estimation (only if Phase 2 didn't connect)
-            const getEstimatedProgress = (elapsedMs: number): { pct: number; msg: string } => {
-              const mins = elapsedMs / 60000;
-              if (mins < 2) return { pct: 20, msg: 'Starting OS installation...' };
-              if (mins < 5) return { pct: 30, msg: 'Downloading Windows image...' };
-              if (mins < 9) return { pct: 45, msg: 'Downloading Windows image...' };
-              if (mins < 12) return { pct: 60, msg: 'Writing OS to disk...' };
-              if (mins < 15) return { pct: 70, msg: 'Configuring Windows...' };
-              if (mins < 18) return { pct: 80, msg: 'Windows first boot...' };
-              return { pct: 85, msg: 'Waiting for RDP service...' };
+            // Background: try SSH reconnect for realtime monitoring (non-blocking)
+            const trySSHMonitor = async () => {
+              // Wait 60s before first attempt (Alpine needs time to boot)
+              await new Promise(r => setTimeout(r, 60000));
+
+              for (let attempt = 1; attempt <= 15; attempt++) {
+                if (sshMonitorDone) return;
+                try {
+                  const reconnConn = await new Promise<any>((resolveConn, rejectConn) => {
+                    const c = new Client();
+                    const timer = setTimeout(() => { c.end(); rejectConn(new Error('timeout')); }, 10000);
+                    c.on('ready', () => { clearTimeout(timer); resolveConn(c); });
+                    c.on('error', (e: Error) => { clearTimeout(timer); rejectConn(e); });
+                    c.connect({ host: vpsIp, port: 22, username: 'root', password: rdpPassword, readyTimeout: 10000, algorithms: SSH_ALGORITHMS });
+                  });
+
+                  phase2Connected = true;
+                  onLog?.('✅ Connected — monitoring realtime...');
+
+                  await new Promise<void>((resolvePhase2) => {
+                    const monitorCmd = [
+                      'PREV=""', 'PREV_MB=0',
+                      'while true; do', '  sleep 5',
+                      '  MB=$(df -m 2>/dev/null | awk "NR>1{sum+=\\$3}END{print int(sum)}" || echo "0")',
+                      '  RX=$(cat /proc/net/dev 2>/dev/null | grep -E "eth0|ens|enp" | awk "{gsub(/:/,\\\" \\\");print int(\\$2/1048576)}" | head -1)',
+                      '  [ -z "$RX" ] && RX=0',
+                      '  B=$((MB>RX?MB:RX))',
+                      '  HW=$(pgrep -f "wget\\|curl" >/dev/null 2>&1 && echo 1 || echo 0)',
+                      '  HE=$(pgrep -f "gzip\\|zstd\\|xz\\|dd" >/dev/null 2>&1 && echo 1 || echo 0)',
+                      '  HC=$(pgrep -f "wimlib\\|ntfs" >/dev/null 2>&1 && echo 1 || echo 0)',
+                      '  HT=$(pgrep -f "trans\\|setup" >/dev/null 2>&1 && echo 1 || echo 0)',
+                      '  if [ "$HW" = "1" ]; then P=DL',
+                      '  elif [ "$HE" = "1" ]; then P=WRITE',
+                      '  elif [ "$HC" = "1" ]; then P=CONFIG',
+                      '  elif [ "$HT" = "1" ]; then P=SETUP',
+                      '  else P=IDLE; fi',
+                      '  N="${P}:${B}"',
+                      '  if [ "$N" != "$PREV" ] || [ "$((B-PREV_MB))" -gt 20 ]; then',
+                      '    echo "${P}:0:${B}"; PREV="$N"; PREV_MB=$B',
+                      '  fi',
+                      'done',
+                    ].join('\n');
+
+                    let maxPct = 20;
+                    reconnConn.exec(monitorCmd, (err: any, stream: any) => {
+                      if (err) { reconnConn.end(); resolvePhase2(); return; }
+                      stream.on('data', (d: Buffer) => {
+                        d.toString().split('\n').filter((l: string) => l.trim()).forEach((line: string) => {
+                          const p = line.trim().split(':');
+                          if (['DL','WRITE','CONFIG','SETUP','IDLE'].includes(p[0])) {
+                            const mb = parseInt(p[2]) || 0;
+                            let pct = maxPct, msg = '';
+                            switch(p[0]) {
+                              case 'DL': pct = Math.min(20+Math.floor(mb/80),55); msg = mb>100 ? `Downloading... (${(mb/1024).toFixed(1)}GB)` : 'Downloading Windows image...'; break;
+                              case 'WRITE': pct = Math.max(55,maxPct); msg = mb>1000 ? `Writing to disk... (${(mb/1024).toFixed(1)}GB)` : 'Writing to disk...'; break;
+                              case 'CONFIG': pct = Math.max(70,maxPct); msg = 'Configuring Windows...'; break;
+                              case 'SETUP': pct = Math.max(78,maxPct); msg = 'Finalizing setup...'; break;
+                              case 'IDLE': pct = Math.max(20,maxPct); msg = 'Preparing...'; break;
+                            }
+                            if (pct > maxPct) maxPct = pct;
+                            pct = Math.min(maxPct, 85);
+                            onLog?.(msg);
+                            reportProgress(pct, msg, 'in_progress');
+                          }
+                        });
+                      });
+                      stream.on('close', () => {
+                        onLog?.('📡 Installer finished — Windows booting...');
+                        try { reconnConn.end(); } catch(_) {}
+                        resolvePhase2();
+                      });
+                    });
+                    setTimeout(() => { try { reconnConn.end(); } catch(_) {} resolvePhase2(); }, 25*60*1000);
+                  });
+                  return;
+                } catch {
+                  if (attempt < 15) await new Promise(r => setTimeout(r, 10000));
+                }
+              }
             };
 
-            if (phase2Connected) {
-              // Phase 2 already monitored — just wait for port
-              onLog?.('🔍 Checking if Windows is ready...');
-              reportProgress(88, 'Waiting for Windows to start...', 'in_progress');
-              await new Promise(r => setTimeout(r, 60000)); // Wait 60s for Windows boot
-            }
+            // Start SSH monitor in background (non-blocking)
+            const sshPromise = trySSHMonitor().catch(() => {});
+
+            // Time-based progress estimation
+            const getEstimatedProgress = (ms: number): { pct: number; msg: string } => {
+              const m = ms / 60000;
+              if (m < 2) return { pct: 18, msg: 'Rebooting into installer...' };
+              if (m < 5) return { pct: 28, msg: 'Downloading Windows image...' };
+              if (m < 9) return { pct: 42, msg: 'Downloading Windows image...' };
+              if (m < 12) return { pct: 58, msg: 'Writing OS to disk...' };
+              if (m < 15) return { pct: 68, msg: 'Configuring Windows...' };
+              if (m < 18) return { pct: 78, msg: 'Windows first boot...' };
+              return { pct: 84, msg: 'Waiting for RDP service...' };
+            };
 
             let rdpReady = false;
 
+            // Main loop: port check + time-based progress (SSH monitor updates in parallel)
             while (Date.now() - startTime < MAX_WAIT_MS) {
               const isOpen = await checkPort(vpsIp, RDP_CHECK_PORT, 8000);
               if (isOpen) {
                 onLog?.(`✅ RDP port ${RDP_CHECK_PORT} is OPEN! Windows is ready.`);
-                reportProgress(95, 'RDP ready! Initializing...', 'in_progress');
+                reportProgress(95, 'RDP ready!', 'in_progress');
                 rdpReady = true;
+                sshMonitorDone = true;
                 break;
               }
 
+              // Only show time-based progress if SSH monitor not connected
               if (!phase2Connected) {
                 const elapsed = Date.now() - startTime;
                 const { pct, msg } = getEstimatedProgress(elapsed);
-                const elapsedMin = Math.floor(elapsed / 60000);
+                const mins = Math.floor(elapsed / 60000);
                 reportProgress(pct, msg, 'in_progress');
-                if (elapsed % 60000 < 15000 && elapsedMin > 0) {
-                  onLog?.(`⏳ ${msg} (${elapsedMin}m)`);
+                if (elapsed % 60000 < 15000 && mins > 0) {
+                  onLog?.(`⏳ ${msg} (${mins}m)`);
                 }
               }
 
               await new Promise(r => setTimeout(r, 15000));
             }
+            sshMonitorDone = true;
 
             if (rdpReady) {
               // ============================================================
