@@ -617,21 +617,21 @@ export async function installDedicatedRDP(
             // Close first connection cleanly
             try { conn.end(); } catch (_e) { /* ignore */ }
 
-            // Wait 15 seconds for VPS to reboot
-            await new Promise(r => setTimeout(r, 15000));
+            const RDP_CHECK_PORT = parseInt(RDP_PORT) || 22;
 
             // ============================================================
-            // Phase 2: SSH Reconnect — EXACT copy from repo lama (proven working)
+            // STEP 2: Wait 30s → reconnect to Alpine (rdpPassword)
             // ============================================================
-            reportProgress(16, 'Connecting to installer...', 'in_progress');
+            onLog?.('⏳ Waiting for installer to boot...');
+            reportProgress(16, 'Rebooting...', 'in_progress');
+            await new Promise(r => setTimeout(r, 30000));
 
-            let phase2Connected = false;
-
-            for (let attempt = 1; attempt <= 15; attempt++) {
+            let reconnConn: any = null;
+            for (let attempt = 1; attempt <= 20; attempt++) {
               try {
-                const reconnConn = await new Promise<any>((resolveConn, rejectConn) => {
+                reconnConn = await new Promise<any>((resolveConn, rejectConn) => {
                   const c = new Client();
-                  const timer = setTimeout(() => { c.end(); rejectConn(new Error('timeout')); }, 20000);
+                  const timer = setTimeout(() => { c.end(); rejectConn(new Error('timeout')); }, 15000);
                   c.on('ready', () => { clearTimeout(timer); resolveConn(c); });
                   c.on('error', (e: Error) => { clearTimeout(timer); rejectConn(e); });
                   c.connect({
@@ -639,123 +639,145 @@ export async function installDedicatedRDP(
                     port: 22,
                     username: 'root',
                     password: rdpPassword,
-                    readyTimeout: 20000,
+                    readyTimeout: 15000,
+                    algorithms: SSH_ALGORITHMS
+                  });
+                });
+                break; // connected
+              } catch {
+                reconnConn = null;
+                if (attempt < 20) await new Promise(r => setTimeout(r, 20000));
+              }
+            }
+
+            // ============================================================
+            // STEP 3: Monitor realtime (network RX) until SSH drops
+            // ============================================================
+            if (reconnConn) {
+              onLog?.('✅ Connected — monitoring installation...');
+              reportProgress(20, 'Downloading & installing...', 'in_progress');
+
+              await new Promise<void>((resolveMonitor) => {
+                const monitorCmd = [
+                  'PREV_MB=0',
+                  'while true; do',
+                  '  sleep 3',
+                  '  RX=$(cat /proc/net/dev 2>/dev/null | awk "/:/{gsub(/:/,\\\" \\\");sum+=\\$2}END{print int(sum/1048576)}")',
+                  '  [ -z "$RX" ] && RX=0',
+                  '  if [ "$((RX - PREV_MB))" -gt 3 ] || [ "$PREV_MB" -eq 0 ]; then',
+                  '    echo "RX:${RX}"',
+                  '    PREV_MB=$RX',
+                  '  fi',
+                  'done',
+                ].join('\n');
+
+                reconnConn.exec(monitorCmd, (err: any, stream: any) => {
+                  if (err) { try { reconnConn.end(); } catch(_){} resolveMonitor(); return; }
+
+                  stream.on('data', (d: Buffer) => {
+                    d.toString().split('\n').forEach((line: string) => {
+                      if (line.startsWith('RX:')) {
+                        const mb = parseInt(line.split(':')[1]) || 0;
+                        const pct = Math.min(20 + Math.floor(mb / 55), 83);
+                        const msg = mb < 30 ? 'Starting installation...' : `Installing... (${(mb/1024).toFixed(1)}GB)`;
+                        onLog?.(msg);
+                        reportProgress(pct, msg, 'in_progress');
+                      }
+                    });
+                  });
+
+                  // SSH DROP = Alpine rebooted to Windows
+                  stream.on('close', () => {
+                    onLog?.('📡 Windows is booting...');
+                    reportProgress(85, 'Windows booting...', 'in_progress');
+                    try { reconnConn.end(); } catch(_){}
+                    resolveMonitor();
+                  });
+                });
+
+                // Safety timeout: 25 min
+                setTimeout(() => { try { reconnConn.end(); } catch(_){} resolveMonitor(); }, 25 * 60 * 1000);
+              });
+            } else {
+              onLog?.('⏳ Installation in progress (monitoring unavailable)...');
+              reportProgress(50, 'Installing...', 'in_progress');
+            }
+
+            // ============================================================
+            // STEP 4: Wait 20s → SSH to Windows → inject batch → reboot
+            // ============================================================
+            onLog?.('⏳ Waiting for Windows...');
+            await new Promise(r => setTimeout(r, 20000));
+
+            // Try SSH to Windows as administrator
+            let injected = false;
+            for (let attempt = 1; attempt <= 10; attempt++) {
+              try {
+                const winConn = await new Promise<any>((resolveConn, rejectConn) => {
+                  const c = new Client();
+                  const timer = setTimeout(() => { c.end(); rejectConn(new Error('timeout')); }, 15000);
+                  c.on('ready', () => { clearTimeout(timer); resolveConn(c); });
+                  c.on('error', (e: Error) => { clearTimeout(timer); rejectConn(e); });
+                  c.connect({
+                    host: vpsIp,
+                    port: RDP_CHECK_PORT,
+                    username: 'administrator',
+                    password: rdpPassword,
+                    readyTimeout: 15000,
                     algorithms: SSH_ALGORITHMS
                   });
                 });
 
-                onLog?.('✅ Connected to installer');
-                phase2Connected = true;
-                reportProgress(18, 'Monitoring installation...', 'in_progress');
+                onLog?.('🔧 Running post-install setup...');
+                reportProgress(90, 'Post-install setup...', 'in_progress');
 
-                // Monitor installation via network RX (reliable on Alpine which uses tmpfs)
-                await new Promise<void>((resolvePhase2) => {
-                  const monitorCmd = [
-                    'PREV_MB=0',
-                    'while true; do',
-                    '  sleep 3',
-                    '  RX=$(cat /proc/net/dev 2>/dev/null | awk "/:/{gsub(/:/,\\\" \\\");sum+=\\$2}END{print int(sum/1048576)}")',
-                    '  [ -z "$RX" ] && RX=0',
-                    '  DIFF=$((RX - PREV_MB))',
-                    '  if [ "$DIFF" -gt 5 ] || [ "$PREV_MB" -eq 0 ]; then',
-                    '    echo "DATA:${RX}"',
-                    '    PREV_MB=$RX',
-                    '  fi',
-                    'done',
-                  ].join('\n');
+                // Run windows-change-rdp-port.bat commands
+                await new Promise<void>((resolveInject) => {
+                  const cmd = [
+                    'powershell -NoProfile -ExecutionPolicy Bypass -Command "try{Rename-Computer -NewName COBAIN-DEV -Force}catch{}"',
+                    'reg add "HKLM\\SYSTEM\\CurrentControlSet\\Control\\Terminal Server\\WinStations\\RDP-Tcp" /v PortNumber /t REG_DWORD /d 22 /f',
+                    'netsh advfirewall firewall add rule name="RDP22" dir=in action=allow protocol=tcp localport=22',
+                    'powercfg -change -standby-timeout-ac 0',
+                    'net accounts /lockoutthreshold:0',
+                    'shutdown /r /t 5 /c "Setup complete"',
+                  ].join(' & ');
 
-                  let lastMB = 0;
-
-                  reconnConn.exec(monitorCmd, (execErr: any, stream2: any) => {
-                    if (execErr) {
-                      reconnConn.end();
-                      resolvePhase2();
-                      return;
-                    }
-
-                    stream2.on('data', (data: Buffer) => {
-                      data.toString().split('\n').filter((l: string) => l.trim()).forEach((line: string) => {
-                        const trimmed = line.trim();
-                        if (!trimmed) return;
-
-                        // Parse: DATA:<MB_received>
-                        if (trimmed.startsWith('DATA:')) {
-                          const mb = parseInt(trimmed.split(':')[1]) || 0;
-                          lastMB = mb;
-                          // Progress based on network data received
-                          // Typical Windows image: 3-6 GB
-                          const pct = Math.min(20 + Math.floor(mb / 60), 82);
-                          const gbStr = (mb / 1024).toFixed(1);
-                          const msg = mb < 50 ? 'Starting download...' : `Downloading & installing... (${gbStr}GB received)`;
-                          onLog?.(msg);
-                          reportProgress(pct, msg, 'in_progress');
-                          return;
-                        }
-                      });
+                  winConn.exec(`cmd /c "${cmd}"`, (err: any, stream: any) => {
+                    if (err) { winConn.end(); resolveInject(); return; }
+                    stream.on('close', () => {
+                      injected = true;
+                      onLog?.('✅ Post-install done — rebooting...');
+                      winConn.end();
+                      resolveInject();
                     });
-
-                    // SSH drops = VPS rebooted into Windows
-                    stream2.on('close', () => {
-                      onLog?.('📡 Installation complete, Windows booting...');
-                      try { reconnConn.end(); } catch (_) {}
-                      resolvePhase2();
-                    });
+                    setTimeout(() => { try { winConn.end(); } catch(_){} resolveInject(); }, 30000);
                   });
-
-                  // Safety: 25 min max
-                  setTimeout(() => {
-                    try { reconnConn.end(); } catch (_) {}
-                    resolvePhase2();
-                  }, 25 * 60 * 1000);
                 });
 
-                break;
-              } catch (reconnErr: any) {
-                console.log(`SSH reconnect attempt ${attempt} failed: ${reconnErr.message}`);
-                if (attempt < 15) {
-                  await new Promise(r => setTimeout(r, 10000));
-                }
+                if (injected) break;
+              } catch {
+                if (attempt < 10) await new Promise(r => setTimeout(r, 15000));
               }
             }
 
-            if (!phase2Connected) {
-              onLog?.('⏳ Installation in progress...');
+            // ============================================================
+            // STEP 5: Wait for final reboot → check port → DONE
+            // ============================================================
+            if (injected) {
+              onLog?.('⏳ Rebooting with new settings...');
+              reportProgress(95, 'Rebooting...', 'in_progress');
+              await new Promise(r => setTimeout(r, 30000));
             }
 
-            // Wait 30s for Windows to boot
-            onLog?.('⏳ Starting Windows...');
-            reportProgress(85, 'Starting Windows...', 'in_progress');
-            await new Promise(r => setTimeout(r, 30000));
-
-            // ============================================================
-            // Phase 3: Check if RDP port becomes available
-            // ============================================================
+            // Check port open
             let rdpReady = false;
-            const maxAttempts = 20;
-            const RDP_CHECK_PORT = parseInt(RDP_PORT) || 22;
-
-            for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-              reportProgress(90, `Checking RDP port (${attempt}/${maxAttempts})...`, 'in_progress');
-
-              const isOpen = await checkPort(vpsIp, RDP_CHECK_PORT, 10000);
-
-              if (isOpen) {
-                onLog?.(`✅ RDP port ${RDP_CHECK_PORT} is OPEN! Windows is ready.`);
-                reportProgress(95, 'RDP ready!', 'in_progress');
-                rdpReady = true;
-                break;
-              } else {
-                if (attempt < maxAttempts) {
-                  await new Promise(r => setTimeout(r, 15000));
-                }
-              }
+            for (let attempt = 1; attempt <= 15; attempt++) {
+              const isOpen = await checkPort(vpsIp, RDP_CHECK_PORT, 8000);
+              if (isOpen) { rdpReady = true; break; }
+              await new Promise(r => setTimeout(r, 10000));
             }
 
             if (rdpReady) {
-              onLog?.('⏳ Finalizing...');
-              reportProgress(98, 'Finalizing...', 'in_progress');
-              await new Promise(r => setTimeout(r, 15000));
-
               reportProgress(100, 'Installation complete', 'completed');
               onLog?.('');
               onLog?.('✅ Installation complete ✅');
@@ -765,17 +787,12 @@ export async function installDedicatedRDP(
 
               resolve({
                 success: true,
-                credentials: {
-                  ip: vpsIp,
-                  username: 'administrator',
-                  password: rdpPassword,
-                  port: RDP_CHECK_PORT
-                }
+                credentials: { ip: vpsIp, username: 'administrator', password: rdpPassword, port: RDP_CHECK_PORT }
               });
             } else {
-              onLog?.(`❌ RDP port ${RDP_CHECK_PORT} not available after ${maxAttempts} attempts`);
+              onLog?.('❌ RDP port not available');
               reportProgress(90, 'Failed: RDP port not available', 'failed');
-              reject(new Error(`RDP port ${RDP_CHECK_PORT} not available after ${maxAttempts} attempts`));
+              reject(new Error('RDP port not available after timeout'));
             }
           });
         });
