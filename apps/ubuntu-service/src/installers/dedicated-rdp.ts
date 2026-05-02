@@ -804,9 +804,109 @@ export async function installDedicatedRDP(
             }
 
             if (rdpReady) {
-              onLog?.('⏳ Waiting 30s for RDP service to fully initialize...');
-              reportProgress(98, 'Running post-install setup...', 'in_progress');
-              await new Promise(r => setTimeout(r, 30000));
+              // ============================================================
+              // Phase 4: Post-install — SSH to Windows, run setup batch file
+              // Changes: RDP port → 22, PC name → COBAIN-DEV, install OpenSSH on 2222
+              // ============================================================
+              onLog?.('⏳ Waiting 45s for Windows services to initialize...');
+              reportProgress(96, 'Running post-install setup...', 'in_progress');
+              await new Promise(r => setTimeout(r, 45000));
+
+              let postInstallDone = false;
+              for (let attempt = 1; attempt <= 5; attempt++) {
+                try {
+                  onLog?.(`🔧 Post-install setup (attempt ${attempt}/5)...`);
+                  const winConn = await new Promise<any>((resolveConn, rejectConn) => {
+                    const c = new Client();
+                    const timer = setTimeout(() => { c.end(); rejectConn(new Error('timeout')); }, 20000);
+                    c.on('ready', () => { clearTimeout(timer); resolveConn(c); });
+                    c.on('error', (e: Error) => { clearTimeout(timer); rejectConn(e); });
+                    c.connect({
+                      host: vpsIp,
+                      port: RDP_CHECK_PORT,
+                      username: 'administrator',
+                      password: rdpPassword,
+                      readyTimeout: 20000,
+                      algorithms: SSH_ALGORITHMS
+                    });
+                  });
+
+                  onLog?.('✅ Connected to Windows — running post-install...');
+
+                  // Run batch commands: rename PC + change RDP port + install OpenSSH + reboot
+                  await new Promise<void>((resolvePost) => {
+                    const postCmd = [
+                      // Rename PC
+                      `powershell -NoProfile -ExecutionPolicy Bypass -Command "try { Rename-Computer -NewName 'COBAIN-DEV' -Force -ErrorAction Stop } catch { wmic computersystem where name=\\"$env:COMPUTERNAME\\" call rename \\"COBAIN-DEV\\" }"`,
+                      // Set RDP port to 22
+                      `reg add "HKLM\\SYSTEM\\CurrentControlSet\\Control\\Terminal Server\\WinStations\\RDP-Tcp" /v PortNumber /t REG_DWORD /d 22 /f`,
+                      // Firewall: allow RDP on port 22
+                      `netsh advfirewall firewall add rule name="RDP-Port22" dir=in action=allow protocol=tcp localport=22`,
+                      // Disable sleep
+                      `powercfg -change -standby-timeout-ac 0`,
+                      `powercfg -change -standby-timeout-dc 0`,
+                      // Disable account lockout
+                      `net accounts /lockoutthreshold:0`,
+                      // Install OpenSSH Server on port 2222
+                      `powershell -NoProfile -ExecutionPolicy Bypass -Command "try { $cap = Get-WindowsCapability -Online | Where-Object Name -like 'OpenSSH.Server*'; if ($cap.State -ne 'Installed') { Add-WindowsCapability -Online -Name $cap.Name } } catch {}"`,
+                      // Configure SSH port 2222
+                      `powershell -NoProfile -ExecutionPolicy Bypass -Command "$conf = '$env:ProgramData\\ssh\\sshd_config'; if (Test-Path $conf) { $c = Get-Content $conf; $c = $c -replace '^#?Port .*', 'Port 2222'; if ($c -notmatch '^Port ') { $c += 'Port 2222' }; Set-Content $conf $c } else { New-Item -Path (Split-Path $conf) -ItemType Directory -Force | Out-Null; Set-Content $conf 'Port 2222`nPasswordAuthentication yes' }"`,
+                      `sc config sshd start= auto`,
+                      `net start sshd`,
+                      `netsh advfirewall firewall add rule name="OpenSSH-2222" dir=in action=allow protocol=tcp localport=2222`,
+                      // Restart RDP service
+                      `net stop TermService /y & net start TermService`,
+                      // Schedule reboot in 5 seconds
+                      `shutdown /r /t 5 /c "Applying RDP + SSH + Rename Settings"`,
+                      `echo POST_INSTALL_DONE`,
+                    ].join(' & ');
+
+                    winConn.exec(`cmd /c "${postCmd}"`, (err: any, stream: any) => {
+                      if (err) {
+                        winConn.end();
+                        resolvePost();
+                        return;
+                      }
+                      let output = '';
+                      stream.on('data', (d: Buffer) => { output += d.toString(); });
+                      stream.on('close', () => {
+                        if (output.includes('POST_INSTALL_DONE')) {
+                          onLog?.('✅ Post-install setup complete — Windows rebooting...');
+                          postInstallDone = true;
+                        }
+                        winConn.end();
+                        resolvePost();
+                      });
+                      // Timeout: 60s for all commands
+                      setTimeout(() => {
+                        try { winConn.end(); } catch (_) {}
+                        resolvePost();
+                      }, 60000);
+                    });
+                  });
+
+                  if (postInstallDone) break;
+                } catch (postErr: any) {
+                  console.log(`Post-install attempt ${attempt} failed: ${postErr.message}`);
+                  if (attempt < 5) await new Promise(r => setTimeout(r, 15000));
+                }
+              }
+
+              if (postInstallDone) {
+                // Wait for Windows to reboot after post-install
+                onLog?.('⏳ Windows rebooting with new settings...');
+                reportProgress(98, 'Rebooting...', 'in_progress');
+                await new Promise(r => setTimeout(r, 60000));
+
+                // Verify port 22 is back (RDP on new port)
+                for (let i = 0; i < 10; i++) {
+                  const isBack = await checkPort(vpsIp, 22, 8000);
+                  if (isBack) break;
+                  await new Promise(r => setTimeout(r, 10000));
+                }
+              } else {
+                onLog?.('⚠️ Post-install setup skipped — RDP still works on current port');
+              }
 
               reportProgress(100, 'Installation complete', 'completed');
               onLog?.('');
