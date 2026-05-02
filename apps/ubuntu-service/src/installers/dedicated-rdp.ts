@@ -632,7 +632,11 @@ export async function installDedicatedRDP(
             let phase2Connected = false;
 
             for (let attempt = 1; attempt <= 20; attempt++) {
-              onLog?.('Verifying...');
+              if (attempt === 1) {
+                onLog?.('⏳ Installing OS on target VPS... This takes 10-20 minutes.');
+              } else if (attempt % 5 === 0) {
+                onLog?.(`⏳ Still installing... (${attempt * 15}s elapsed)`);
+              }
 
               // Try port 22 first, then 2222
               const portsToTry = [22, 2222];
