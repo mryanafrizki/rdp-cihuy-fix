@@ -780,11 +780,16 @@ export async function installDedicatedRDP(
               // Phase 4: Post-install — SSH to Windows, run setup batch file
               // Changes: RDP port → 22, PC name → COBAIN-DEV, install OpenSSH on 2222
               // ============================================================
-              onLog?.('⏳ Waiting for Windows services...');
-              reportProgress(96, 'Running post-install setup...', 'in_progress');
-              await new Promise(r => setTimeout(r, 15000));
+              // Phase 4: Post-install is handled by installer scripts in .img
+              // (windows-change-rdp-port.bat runs automatically on first Windows boot)
+              // Just wait briefly for RDP service to fully initialize
+              onLog?.('⏳ Waiting for RDP service to initialize...');
+              reportProgress(98, 'Finalizing...', 'in_progress');
+              await new Promise(r => setTimeout(r, 20000));
 
-              let postInstallDone = false;
+              let postInstallDone = true; // Skip SSH post-install — handled by .img scripts
+              const SKIP_SSH_POST_INSTALL = true;
+              if (!SKIP_SSH_POST_INSTALL)
               for (let attempt = 1; attempt <= 5; attempt++) {
                 try {
                   onLog?.(`🔧 Post-install setup (attempt ${attempt}/5)...`);
