@@ -657,29 +657,34 @@ export async function installDedicatedRDP(
                 phase2Connected = true;
                 reportProgress(18, 'Monitoring installation...', 'in_progress');
 
-                // Realtime monitoring via disk usage + process detection
+                // Realtime monitoring via disk usage + process detection + network RX
                 await new Promise<void>((resolvePhase2) => {
                   const monitorCmd = [
                     'PREV_STATUS=""',
                     'PREV_MB=0',
                     'while true; do',
                     '  sleep 5',
-                    '  USED_PCT=$(df 2>/dev/null | grep -vE "tmpfs|devtmpfs|overlay|shm" | awk "NR>1{sum+=\\$3;total+=\\$2}END{if(total>0)print int(sum*100/total);else print 0}" || echo "0")',
-                    '  MB=$(df 2>/dev/null | grep -vE "tmpfs|devtmpfs|overlay|shm" | awk "NR>1{sum+=\\$3}END{print int(sum/1024)}" || echo "0")',
-                    '  HAS_WGET=$(pgrep -f "wget" >/dev/null 2>&1 && echo "1" || echo "0")',
-                    '  HAS_EXTRACT=$(pgrep -f "gzip\\|gunzip\\|zstd\\|xz" >/dev/null 2>&1 && echo "1" || echo "0")',
-                    '  HAS_WIMLIB=$(pgrep -f "wimlib\\|ntfs" >/dev/null 2>&1 && echo "1" || echo "0")',
-                    '  HAS_TRANS=$(pgrep -f "trans" >/dev/null 2>&1 && echo "1" || echo "0")',
+                    // Total disk usage across ALL filesystems (including tmpfs where Alpine downloads)
+                    '  MB=$(df -m 2>/dev/null | awk "NR>1{sum+=\\$3}END{print int(sum)}" || echo "0")',
+                    // Network RX bytes as alternative size indicator
+                    '  RX_MB=$(cat /proc/net/dev 2>/dev/null | grep -E "eth0|ens|enp" | awk "{gsub(/:/,\\\" \\\");print int(\\$2/1048576)}" | head -1)',
+                    '  [ -z "$RX_MB" ] && RX_MB=0',
+                    // Use whichever is larger (disk or network) as progress indicator
+                    '  BEST_MB=$((MB > RX_MB ? MB : RX_MB))',
+                    '  HAS_WGET=$(pgrep -f "wget\\|curl\\|aria2" >/dev/null 2>&1 && echo "1" || echo "0")',
+                    '  HAS_EXTRACT=$(pgrep -f "gzip\\|gunzip\\|zstd\\|xz\\|dd" >/dev/null 2>&1 && echo "1" || echo "0")',
+                    '  HAS_WIMLIB=$(pgrep -f "wimlib\\|ntfs\\|wim" >/dev/null 2>&1 && echo "1" || echo "0")',
+                    '  HAS_TRANS=$(pgrep -f "trans\\|setup" >/dev/null 2>&1 && echo "1" || echo "0")',
                     '  if [ "$HAS_WGET" = "1" ]; then PH="DL"',
                     '  elif [ "$HAS_EXTRACT" = "1" ]; then PH="WRITE"',
                     '  elif [ "$HAS_WIMLIB" = "1" ]; then PH="CONFIG"',
                     '  elif [ "$HAS_TRANS" = "1" ]; then PH="SETUP"',
                     '  else PH="IDLE"; fi',
-                    '  NEW="${PH}:${MB}"',
-                    '  if [ "$NEW" != "$PREV_STATUS" ] || [ "$((MB - PREV_MB))" -gt 50 ]; then',
-                    '    echo "${PH}:${USED_PCT}:${MB}"',
+                    '  NEW="${PH}:${BEST_MB}"',
+                    '  if [ "$NEW" != "$PREV_STATUS" ] || [ "$((BEST_MB - PREV_MB))" -gt 20 ]; then',
+                    '    echo "${PH}:0:${BEST_MB}"',
                     '    PREV_STATUS="$NEW"',
-                    '    PREV_MB=$MB',
+                    '    PREV_MB=$BEST_MB',
                     '  fi',
                     'done',
                   ].join('\n');
@@ -702,11 +707,17 @@ export async function installDedicatedRDP(
                           let pct = maxPctSeen;
                           let msg = '';
                           switch (phase) {
-                            case 'DL': pct = Math.min(20 + Math.floor(mb / 100), 55); msg = `Downloading Windows image... (${(mb/1024).toFixed(1)}GB)`; break;
-                            case 'WRITE': pct = Math.max(55, maxPctSeen); msg = 'Writing to disk...'; break;
+                            case 'DL':
+                              pct = Math.min(20 + Math.floor(mb / 80), 55);
+                              msg = mb > 100 ? `Downloading Windows image... (${(mb/1024).toFixed(1)}GB)` : 'Downloading Windows image...';
+                              break;
+                            case 'WRITE':
+                              pct = Math.max(55, maxPctSeen);
+                              msg = mb > 1000 ? `Writing to disk... (${(mb/1024).toFixed(1)}GB)` : 'Writing to disk...';
+                              break;
                             case 'CONFIG': pct = Math.max(70, maxPctSeen); msg = 'Configuring Windows...'; break;
                             case 'SETUP': pct = Math.max(78, maxPctSeen); msg = 'Finalizing setup...'; break;
-                            case 'IDLE': pct = Math.max(82, maxPctSeen); msg = 'Preparing...'; break;
+                            case 'IDLE': pct = Math.max(20, maxPctSeen); msg = 'Preparing installation...'; break;
                           }
                           if (pct > maxPctSeen) maxPctSeen = pct;
                           pct = Math.min(maxPctSeen, 85);
