@@ -617,53 +617,161 @@ export async function installDedicatedRDP(
             // Close first connection cleanly
             try { conn.end(); } catch (_e) { /* ignore */ }
 
-            // ============================================================
-            // Phase 2+3 Combined: Smart port-based detection
-            // Instead of SSH monitoring (unreliable from Docker), we use
-            // port checking with time-based progress estimation.
-            //
-            // Timeline:
-            //   0-2 min:   VPS rebooting into Alpine installer
-            //   2-15 min:  Downloading + writing OS image
-            //   15-20 min: Windows first boot + setup
-            //   20+ min:   RDP port should be open
-            // ============================================================
             const RDP_CHECK_PORT = parseInt(RDP_PORT) || 22;
-            const startTime = Date.now();
-            const MAX_WAIT_MS = 30 * 60 * 1000; // 30 minutes max
 
+            // ============================================================
+            // Phase 2: Try SSH reconnect for realtime monitoring
+            // ssh2 Node.js library can connect even when system ssh/nc can't
+            // (pure JS TCP socket bypasses some system-level restrictions)
+            // ============================================================
             onLog?.('');
             onLog?.('📡 Installation triggered — monitoring progress...');
-            onLog?.('⏳ Downloading and installing Windows OS...');
-            onLog?.('   This typically takes 10-20 minutes.');
-            reportProgress(15, 'Installing OS...', 'in_progress');
+            reportProgress(15, 'Waiting for installer to boot...', 'in_progress');
 
-            // Estimated phases based on elapsed time
+            // Wait 45s for VPS to reboot into Alpine
+            await new Promise(r => setTimeout(r, 45000));
+
+            let phase2Connected = false;
+
+            // Try SSH reconnect — 10 attempts, 15s each = ~2.5 min
+            for (let attempt = 1; attempt <= 10; attempt++) {
+              if (attempt === 1) onLog?.('🔄 Connecting to installer...');
+
+              try {
+                const reconnConn = await new Promise<any>((resolveConn, rejectConn) => {
+                  const c = new Client();
+                  const timer = setTimeout(() => { c.end(); rejectConn(new Error('timeout')); }, 12000);
+                  c.on('ready', () => { clearTimeout(timer); resolveConn(c); });
+                  c.on('error', (e: Error) => { clearTimeout(timer); rejectConn(e); });
+                  c.connect({
+                    host: vpsIp,
+                    port: 22,
+                    username: 'root',
+                    password: rdpPassword,
+                    readyTimeout: 12000,
+                    algorithms: SSH_ALGORITHMS
+                  });
+                });
+
+                onLog?.('✅ Connected to installer — monitoring realtime...');
+                phase2Connected = true;
+                reportProgress(18, 'Monitoring installation...', 'in_progress');
+
+                // Realtime monitoring via disk usage + process detection
+                await new Promise<void>((resolvePhase2) => {
+                  const monitorCmd = [
+                    'PREV_STATUS=""',
+                    'PREV_MB=0',
+                    'while true; do',
+                    '  sleep 5',
+                    '  USED_PCT=$(df 2>/dev/null | grep -vE "tmpfs|devtmpfs|overlay|shm" | awk "NR>1{sum+=\\$3;total+=\\$2}END{if(total>0)print int(sum*100/total);else print 0}" || echo "0")',
+                    '  MB=$(df 2>/dev/null | grep -vE "tmpfs|devtmpfs|overlay|shm" | awk "NR>1{sum+=\\$3}END{print int(sum/1024)}" || echo "0")',
+                    '  HAS_WGET=$(pgrep -f "wget" >/dev/null 2>&1 && echo "1" || echo "0")',
+                    '  HAS_EXTRACT=$(pgrep -f "gzip\\|gunzip\\|zstd\\|xz" >/dev/null 2>&1 && echo "1" || echo "0")',
+                    '  HAS_WIMLIB=$(pgrep -f "wimlib\\|ntfs" >/dev/null 2>&1 && echo "1" || echo "0")',
+                    '  HAS_TRANS=$(pgrep -f "trans" >/dev/null 2>&1 && echo "1" || echo "0")',
+                    '  if [ "$HAS_WGET" = "1" ]; then PH="DL"',
+                    '  elif [ "$HAS_EXTRACT" = "1" ]; then PH="WRITE"',
+                    '  elif [ "$HAS_WIMLIB" = "1" ]; then PH="CONFIG"',
+                    '  elif [ "$HAS_TRANS" = "1" ]; then PH="SETUP"',
+                    '  else PH="IDLE"; fi',
+                    '  NEW="${PH}:${MB}"',
+                    '  if [ "$NEW" != "$PREV_STATUS" ] || [ "$((MB - PREV_MB))" -gt 50 ]; then',
+                    '    echo "${PH}:${USED_PCT}:${MB}"',
+                    '    PREV_STATUS="$NEW"',
+                    '    PREV_MB=$MB',
+                    '  fi',
+                    'done',
+                  ].join('\n');
+
+                  let maxPctSeen = 20;
+
+                  reconnConn.exec(monitorCmd, (execErr: any, stream2: any) => {
+                    if (execErr) {
+                      reconnConn.end();
+                      resolvePhase2();
+                      return;
+                    }
+
+                    stream2.on('data', (data: Buffer) => {
+                      data.toString().split('\n').filter((l: string) => l.trim()).forEach((line: string) => {
+                        const parts = line.trim().split(':');
+                        if (['DL', 'WRITE', 'CONFIG', 'SETUP', 'IDLE'].includes(parts[0])) {
+                          const phase = parts[0];
+                          const mb = parseInt(parts[2]) || 0;
+                          let pct = maxPctSeen;
+                          let msg = '';
+                          switch (phase) {
+                            case 'DL': pct = Math.min(20 + Math.floor(mb / 100), 55); msg = `Downloading Windows image... (${(mb/1024).toFixed(1)}GB)`; break;
+                            case 'WRITE': pct = Math.max(55, maxPctSeen); msg = 'Writing to disk...'; break;
+                            case 'CONFIG': pct = Math.max(70, maxPctSeen); msg = 'Configuring Windows...'; break;
+                            case 'SETUP': pct = Math.max(78, maxPctSeen); msg = 'Finalizing setup...'; break;
+                            case 'IDLE': pct = Math.max(82, maxPctSeen); msg = 'Preparing...'; break;
+                          }
+                          if (pct > maxPctSeen) maxPctSeen = pct;
+                          pct = Math.min(maxPctSeen, 85);
+                          onLog?.(msg);
+                          reportProgress(pct, msg, 'in_progress');
+                        }
+                      });
+                    });
+
+                    // SSH drops = VPS rebooted into Windows
+                    stream2.on('close', () => {
+                      onLog?.('📡 Installer finished — Windows is booting...');
+                      try { reconnConn.end(); } catch (_) {}
+                      resolvePhase2();
+                    });
+                  });
+
+                  // Safety: 25 min max for Phase 2
+                  setTimeout(() => {
+                    try { reconnConn.end(); } catch (_) {}
+                    resolvePhase2();
+                  }, 25 * 60 * 1000);
+                });
+
+                break; // Exit reconnect loop
+              } catch (reconnErr: any) {
+                console.log(`SSH reconnect attempt ${attempt} failed: ${reconnErr.message}`);
+                if (attempt < 10) await new Promise(r => setTimeout(r, 15000));
+              }
+            }
+
+            // ============================================================
+            // Phase 3: Wait for RDP port (with or without Phase 2 monitoring)
+            // ============================================================
+            if (!phase2Connected) {
+              onLog?.('⏳ Downloading and installing Windows OS...');
+              onLog?.('   This typically takes 10-20 minutes.');
+            }
+
+            const startTime = Date.now();
+            const MAX_WAIT_MS = phase2Connected ? 10 * 60 * 1000 : 25 * 60 * 1000;
+
+            // Time-based progress estimation (only if Phase 2 didn't connect)
             const getEstimatedProgress = (elapsedMs: number): { pct: number; msg: string } => {
               const mins = elapsedMs / 60000;
-              if (mins < 1) return { pct: 16, msg: 'Rebooting into installer...' };
-              if (mins < 3) return { pct: 20, msg: 'Starting OS installation...' };
-              if (mins < 6) return { pct: 30, msg: 'Downloading Windows image...' };
-              if (mins < 10) return { pct: 45, msg: 'Downloading Windows image...' };
-              if (mins < 13) return { pct: 60, msg: 'Writing OS to disk...' };
-              if (mins < 16) return { pct: 70, msg: 'Configuring Windows...' };
-              if (mins < 19) return { pct: 80, msg: 'Windows first boot...' };
-              if (mins < 22) return { pct: 85, msg: 'Finalizing setup...' };
-              return { pct: 88, msg: 'Waiting for RDP service...' };
+              if (mins < 2) return { pct: 20, msg: 'Starting OS installation...' };
+              if (mins < 5) return { pct: 30, msg: 'Downloading Windows image...' };
+              if (mins < 9) return { pct: 45, msg: 'Downloading Windows image...' };
+              if (mins < 12) return { pct: 60, msg: 'Writing OS to disk...' };
+              if (mins < 15) return { pct: 70, msg: 'Configuring Windows...' };
+              if (mins < 18) return { pct: 80, msg: 'Windows first boot...' };
+              return { pct: 85, msg: 'Waiting for RDP service...' };
             };
+
+            if (phase2Connected) {
+              // Phase 2 already monitored — just wait for port
+              onLog?.('🔍 Checking if Windows is ready...');
+              reportProgress(88, 'Waiting for Windows to start...', 'in_progress');
+              await new Promise(r => setTimeout(r, 60000)); // Wait 60s for Windows boot
+            }
 
             let rdpReady = false;
 
-            // Poll every 15 seconds, check port + update progress
             while (Date.now() - startTime < MAX_WAIT_MS) {
-              const elapsed = Date.now() - startTime;
-              const { pct, msg } = getEstimatedProgress(elapsed);
-              const elapsedMin = Math.floor(elapsed / 60000);
-              const elapsedSec = Math.floor((elapsed % 60000) / 1000);
-
-              // Check RDP port
               const isOpen = await checkPort(vpsIp, RDP_CHECK_PORT, 8000);
-
               if (isOpen) {
                 onLog?.(`✅ RDP port ${RDP_CHECK_PORT} is OPEN! Windows is ready.`);
                 reportProgress(95, 'RDP ready! Initializing...', 'in_progress');
@@ -671,14 +779,16 @@ export async function installDedicatedRDP(
                 break;
               }
 
-              // Update progress with estimated phase
-              reportProgress(pct, msg, 'in_progress');
-              if (elapsedMin > 0 && elapsed % 60000 < 15000) {
-                // Log once per minute
-                onLog?.(`⏳ ${msg} (${elapsedMin}m ${elapsedSec}s)`);
+              if (!phase2Connected) {
+                const elapsed = Date.now() - startTime;
+                const { pct, msg } = getEstimatedProgress(elapsed);
+                const elapsedMin = Math.floor(elapsed / 60000);
+                reportProgress(pct, msg, 'in_progress');
+                if (elapsed % 60000 < 15000 && elapsedMin > 0) {
+                  onLog?.(`⏳ ${msg} (${elapsedMin}m)`);
+                }
               }
 
-              // Wait 15 seconds before next check
               await new Promise(r => setTimeout(r, 15000));
             }
 
